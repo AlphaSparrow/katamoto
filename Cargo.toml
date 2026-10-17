@@ -1,0 +1,25 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/katamoto-script",
+    "crates/katamoto-field",
+    "crates/katamoto-fri",
+    "crates/katamoto-cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["Sparrow <theaayushsakariya@gmail.com>"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/theaayushsakariya/katamoto"
+homepage = "https://github.com/theaayushsakariya/katamoto"
+readme = "README.md"
+description = "Native ZK-STARK Verifier & Tapscript Compiler for Bitcoin using BIP-347 OP_CAT"
+
+[workspace.dependencies]
+thiserror = "1.0"
+sha2 = "0.10"
+hex = "0.4"
+clap = { version = "4.4", features = ["derive"] }
+rand = "0.8"
