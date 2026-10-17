@@ -1,0 +1,15 @@
+[package]
+name = "katamoto-fri"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "BIP-347 OP_CAT Merkle tree verifier and FRI folding compiler for Bitcoin Tapscript"
+
+[dependencies]
+katamoto-script = { path = "../katamoto-script" }
+katamoto-field = { path = "../katamoto-field" }
+sha2.workspace = true
+thiserror.workspace = true
+hex.workspace = true
+rand.workspace = true
