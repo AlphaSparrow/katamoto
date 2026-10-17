@@ -1,0 +1,12 @@
+[package]
+name = "katamoto-field"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Finite field arithmetic and Bitcoin Script verification gadgets (M31 and BabyBear)"
+
+[dependencies]
+katamoto-script = { path = "../katamoto-script" }
+thiserror.workspace = true
+rand.workspace = true
