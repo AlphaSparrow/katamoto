@@ -18,7 +18,7 @@
 
 <p>
   <a href="https://crates.io"><img src="https://img.shields.io/badge/crates.io-v0.1.0-orange?style=flat-square" alt="crates.io" /></a>
-  <a href="https://github.com/AlphaSparrow/katamoto"><img src="https://img.shields.io/badge/tests-28%2F28%20passing-brightgreen?style=flat-square" alt="tests" /></a>
+  <a href="https://github.com/AlphaSparrow/katamoto"><img src="https://img.shields.io/badge/tests-38%2F38%20passing-brightgreen?style=flat-square" alt="tests" /></a>
   <a href="https://www.rust-lang.org"><img src="https://img.shields.io/badge/rust-2021-blue?style=flat-square" alt="rust" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT%2FApache--2.0-blue?style=flat-square" alt="license" /></a>
   <a href="https://github.com/bitcoin/bips/pull/1628"><img src="https://img.shields.io/badge/BIP--347-OP__CAT-success?style=flat-square" alt="bip-347" /></a>
@@ -191,34 +191,39 @@ git clone https://github.com/AlphaSparrow/katamoto.git
 cd katamoto
 ```
 
-### 1. Run the Entire Test Suite (28 Tests)
+### 1. Run the Entire Test Suite (38 Tests)
 ```bash
 cargo test
 ```
 
-### 2. Verify an End-to-End STARK Proof on a Partitioned TapTree
+### 2. Generate a Circle STARK Proof
+```bash
+cargo run -p katamoto-cli -- prove 16
+```
+
+### 3. Compile Proof into a BIP-341 Partitioned TapTree with Telemetry
+```bash
+cargo run -p katamoto-cli -- compile-taptree 2
+```
+
+### 4. Execute an Optimistic Fraud Proof Dispute Transaction
+```bash
+cargo run -p katamoto-cli -- broadcast-challenge 2 999
+```
+
+### 5. Audit Recursive Script Chunking Under Consensus Limits
+```bash
+cargo run -p katamoto-cli -- partitioning-telemetry
+```
+
+### 6. Verify Full STARK Proof on Bitcoin Script VM
 ```bash
 cargo run -p katamoto-cli -- verify-stark 16 1 1
 ```
 
-### 3. Verify Circle STARKs (Stwo) Group Arithmetic & Circle FRI
+### 7. Verify Circle STARKs (Stwo) Group Arithmetic & Circle FRI
 ```bash
 cargo run -p katamoto-cli -- verify-circle
-```
-
-### 4. Emit Raw Taproot v1 Spend Transaction & `testmempoolaccept` Payload
-```bash
-cargo run -p katamoto-cli -- emit-tx 0
-```
-
-### 5. Benchmark BIP-347 OP_CAT Merkle Authentication Across Depths
-```bash
-cargo run -p katamoto-cli -- benchmark-merkle 20
-```
-
-### 6. Verify QM31 Quartic Extension Field Arithmetic (124-bit Security)
-```bash
-cargo run -p katamoto-cli -- verify-qm31
 ```
 
 ---
@@ -256,36 +261,26 @@ curl --user rpcuser:rpcpass \
      -H 'content-type: text/plain;' http://127.0.0.1:18443/
 ```
 
-Response:
-```json
-[
-  {
-    "txid": "1ef1e6197f56d3635d3bb57d4e741f68a17197c0d62b0d420d35bf3795a0f9ad",
-    "allowed": true,
-    "vsize": 131,
-    "fees": { "base": 0.00025000 }
-  }
-]
-```
-
 ---
 
-## Roadmap
+## Roadmap & Architecture
 
-- [x] **Phase 1: Verification Engine Foundation**
-  - [x] BIP-347 `OP_CAT` Tapscript VM with stack budget telemetry
-  - [x] Mersenne-31 ($M_{31}$) and Quartic Extension ($QM_{31}$) field gadgets
-  - [x] Merkle tree proof compiler via `OP_CAT` + `OP_SHA256`
-  - [x] Fiat-Shamir rolling transcript challenge extraction
-- [x] **Phase 2: End-to-End Bitcoin STARK Verifier**
-  - [x] Raw Taproot v1 transaction serializer & consensus limit auditor
-  - [x] Circle STARK curve arithmetic ($\mathcal{C}(M_{31})$) & two-stage Circle FRI folding
-  - [x] Fibonacci state machine AIR & DEEP-ALI out-of-domain quotient evaluation
-  - [x] Multi-leaf BIP-341 `TapTree` compiler & Bitcoin Inquisition RPC harness
-- [ ] **Phase 3: Production Prover & Cairo / RISC-V Pipeline**
-  - [ ] STARK proof generation bindings (direct Stwo & Plonky3 proof ingest)
-  - [ ] Recursive proof aggregation to fold multiple trace queries into a single root
-  - [ ] Automated Bitcoin Taproot settlement daemon & L2 bridge contracts
+- [x] **Phase 1: Field Arithmetic & Circle FFT Optimization (`katamoto-field`)**
+  - [x] In-place batch operations for Mersenne-31 ($M_{31}$) and Quartic Extension ($QM_{31}$)
+  - [x] Coset-based Circle FFT and iFFT butterflies without division by zero
+  - [x] Bit-for-bit Bitcoin Script arithmetic emulation and unit testing
+- [x] **Phase 2: Prover Pipeline & Multi-Column Commitments (`katamoto-air` & `katamoto-fri`)**
+  - [x] Fluent AIR DSL with symbolic column expressions (`curr`, `next`, `constant`)
+  - [x] Multi-column row commitment Merkle tree with `OP_CAT` verification
+  - [x] Fiat-Shamir transcript evolution with domain separation
+- [x] **Phase 3: TapTree Script Compiler (`katamoto-air` & `katamoto-script`)**
+  - [x] Recursive leaf-partitioning pass across 4 leaf types: MerkleAuth, CircleFolding, Constraints, Transcript
+  - [x] Consensus and standardness telemetry enforcing script size $\le 520$ B and stack $\le 1000$
+  - [x] Taproot v1 spend package and transaction builder
+- [x] **Phase 4: BitVM2 / Optimistic Settlement & CLI Pipeline (`katamoto-cli`)**
+  - [x] Optimistic bisection game state machine for disputed transitions
+  - [x] On-chain fraud proof script execution (`OP_NUMNOTEQUAL`) and bond slashing
+  - [x] CLI commands: `prove`, `compile-taptree`, `broadcast-challenge`, `partitioning-telemetry`
 
 ---
 
