@@ -10,5 +10,6 @@ description = "CLI tool and benchmarking telemetry for Katamoto Bitcoin Script S
 katamoto-script = { path = "../katamoto-script" }
 katamoto-field = { path = "../katamoto-field" }
 katamoto-fri = { path = "../katamoto-fri" }
+katamoto-air = { path = "../katamoto-air" }
 hex.workspace = true
 sha2.workspace = true

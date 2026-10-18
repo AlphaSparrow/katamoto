@@ -61,10 +61,26 @@ The workspace is cleanly partitioned into modular crates:
 
 | Crate | Path | Description |
 | :--- | :--- | :--- |
-| **`katamoto-script`** | `crates/katamoto-script` | Bitcoin Tapscript VM & Assembler with full BIP-347 `OP_CAT` implementation, 64-bit ScriptNum support, stack budget telemetry, and flow-control. |
-| **`katamoto-field`** | `crates/katamoto-field` | Finite field arithmetic primitives (Mersenne-31 and QM31 quartic extension) with Script gadgets for zero-`OP_MUL` witness-assisted verification. |
-| **`katamoto-fri`** | `crates/katamoto-fri` | Merkle tree commitment builder, Fiat-Shamir transcript engine, integrated FRI query verifiers, and BIP-341 TapTree compiler. |
-| **`katamoto-cli`** | `crates/katamoto-cli` | CLI runner, opcode benchmarking suite, and Tapscript hex & witness spend emitter. |
+| **`katamoto-script`** | `crates/katamoto-script` | Bitcoin Tapscript VM & Assembler with full BIP-347 `OP_CAT` engine, 64-bit ScriptNum support, consensus limit validator, and raw Taproot v1 transaction serializer. |
+| **`katamoto-field`** | `crates/katamoto-field` | Finite field arithmetic primitives (Mersenne-31, QM31 quartic extension) and Circle curve group arithmetic ($\mathcal{C}(M31): x^2 + y^2 = 1$) with zero-`OP_MUL` Script verification gadgets. |
+| **`katamoto-fri`** | `crates/katamoto-fri` | Merkle tree commitment builder, Fiat-Shamir transcript engine, integrated FRI query verifiers, two-stage Circle FRI folding, and BIP-341 TapTree compiler. |
+| **`katamoto-air`** | `crates/katamoto-air` | Execution trace generator, boundary and transition constraints, DEEP-ALI out-of-domain quotient verifiers, and end-to-end TapTree partitioning compiler. |
+| **`katamoto-cli`** | `crates/katamoto-cli` | CLI runner, opcode benchmarking suite, Circle STARK telemetry, and Bitcoin Inquisition RPC transaction generator. |
+
+---
+
+## ⭕ Circle STARKs & Stwo Compatibility: $x^2 + y^2 = 1$
+
+Standard multiplicative subgroup FFTs fail over $M_{31} = 2^{31} - 1$ because $p - 1 = 2(2^{30} - 1)$ lacks large power-of-2 roots of unity. `Katamoto` implements **Circle STARKs** (Stwo compatible):
+
+* **Circle Curve Group**:
+  $$\mathcal{C}(M_{31}) = \{ (x, y) \in M_{31}^2 \mid x^2 + y^2 = 1 \}$$
+* **Group Law**: $(x_1, y_1) \oplus (x_2, y_2) = (x_1 x_2 - y_1 y_2,\; x_1 y_2 + x_2 y_1)$
+* **Group Order**: $|\mathcal{C}(M_{31})| = p + 1 = 2^{31}$! Because the order is an exact power of 2, cyclic subgroups of order $2^k$ exist for every $k \le 31$.
+* **Two-Stage Circle FRI Folding**:
+  1. **$y$-folding**: Folds conjugate points $(x, y)$ and $(x, -y)$ to $x$.
+  2. **$x$-folding**: Folds points $x$ and $-x$ to the projection $\pi(x) = 2x^2 - 1$.
+* **Script Gadgets**: Zero-division witness-assisted colinearity validation ($LHS = T_1 + T_2$).
 
 ---
 
@@ -109,6 +125,21 @@ Tested using the embedded Bitcoin Script VM:
 ---
 
 ## 🚀 Quickstart
+
+### Verify Full End-to-End STARK Proof on Partitioned TapTree:
+```bash
+cargo run -p katamoto-cli -- verify-stark 16 1 1
+```
+
+### Verify Circle STARKs (Stwo) Group Arithmetic & Circle FRI Folding:
+```bash
+cargo run -p katamoto-cli -- verify-circle
+```
+
+### Emit Raw Bitcoin Taproot v1 Spend Transaction & `testmempoolaccept` RPC:
+```bash
+cargo run -p katamoto-cli -- emit-tx 0
+```
 
 ### Run Merkle Telemetry Benchmark:
 ```bash
