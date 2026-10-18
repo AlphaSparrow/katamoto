@@ -494,3 +494,159 @@ impl Vm {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::builder::ScriptBuilder;
+    use crate::opcodes::Opcode;
+
+    const M31_P: i64 = 2147483647; // 2^31 - 1
+
+    fn native_m31_add(a: u32, b: u32) -> u32 {
+        let sum = (a as u64) + (b as u64);
+        let res = (sum & (M31_P as u64)) + (sum >> 31);
+        if res >= M31_P as u64 { (res - M31_P as u64) as u32 } else { res as u32 }
+    }
+
+    fn native_m31_sub(a: u32, b: u32) -> u32 {
+        if a >= b {
+            a - b
+        } else {
+            ((a as i64 - b as i64 + M31_P) as u64 % (M31_P as u64)) as u32
+        }
+    }
+
+    #[test]
+    fn test_script_m31_add_bit_for_bit() {
+        // Bitcoin Script gadget for (a + b) mod (2^31 - 1)
+        // [a, b] -> OP_ADD -> OP_DUP -> 2147483647 -> OP_GREATERTHANOREQUAL -> OP_IF -> 2147483647 -> OP_SUB -> OP_ENDIF
+        let test_cases = [
+            (0u32, 0u32),
+            (1, 1),
+            (1234567, 7654321),
+            ((M31_P - 1) as u32, 1),
+            ((M31_P - 100) as u32, 200),
+            (1000000000, 1500000000),
+            ((M31_P - 1) as u32, (M31_P - 1) as u32),
+        ];
+
+        for (a, b) in test_cases {
+            let expected = native_m31_add(a, b);
+
+            let mut builder = ScriptBuilder::new();
+            builder.push_int(a as i64);
+            builder.push_int(b as i64);
+            builder.op_add();
+            builder.op_dup();
+            builder.push_int(M31_P);
+            builder.push_opcode(Opcode::OpGreaterThanOrEqual);
+            builder.op_if();
+            builder.push_int(M31_P);
+            builder.op_sub();
+            builder.op_endif();
+
+            let mut vm = Vm::new();
+            let _ = vm.execute(builder.as_bytes()).expect("Execution should succeed");
+
+            assert_eq!(vm.stack().len(), 1);
+            let script_res = decode_num(&vm.stack()[0], MAX_SCRIPT_NUM_LENGTH).unwrap();
+            assert_eq!(script_res, expected as i64, "M31 add failed for {} + {}", a, b);
+        }
+    }
+
+    #[test]
+    fn test_script_m31_sub_bit_for_bit() {
+        // Bitcoin Script gadget for (a - b) mod (2^31 - 1)
+        // [a, b] -> OP_SUB -> OP_DUP -> 0 -> OP_LESSTHAN -> OP_IF -> 2147483647 -> OP_ADD -> OP_ENDIF
+        let test_cases = [
+            (5u32, 2u32),
+            (2, 5),
+            (0, 1),
+            (1000, 1000),
+            ((M31_P - 1) as u32, (M31_P - 2) as u32),
+            (10, (M31_P - 1) as u32),
+            (2000000000, 1000000000),
+        ];
+
+        for (a, b) in test_cases {
+            let expected = native_m31_sub(a, b);
+
+            let mut builder = ScriptBuilder::new();
+            builder.push_int(a as i64);
+            builder.push_int(b as i64);
+            builder.op_sub();
+            builder.op_dup();
+            builder.push_int(0);
+            builder.push_opcode(Opcode::OpLessThan);
+            builder.op_if();
+            builder.push_int(M31_P);
+            builder.op_add();
+            builder.op_endif();
+
+            let mut vm = Vm::new();
+            let _ = vm.execute(builder.as_bytes()).expect("Execution should succeed");
+
+            assert_eq!(vm.stack().len(), 1);
+            let script_res = decode_num(&vm.stack()[0], MAX_SCRIPT_NUM_LENGTH).unwrap();
+            assert_eq!(script_res, expected as i64, "M31 sub failed for {} - {}", a, b);
+        }
+    }
+
+    #[test]
+    fn test_script_qm31_quartic_addition_bit_for_bit() {
+        // Coordinate-wise addition of 4-element vectors: [a0, a1, a2, a3] + [b0, b1, b2, b3]
+        let a = [1111u32, 2222u32, 3333u32, 4444u32];
+        let b = [5555u32, 6666u32, 7777u32, 8888u32];
+        let expected: [u32; 4] = [
+            native_m31_add(a[0], b[0]),
+            native_m31_add(a[1], b[1]),
+            native_m31_add(a[2], b[2]),
+            native_m31_add(a[3], b[3]),
+        ];
+
+        let mut builder = ScriptBuilder::new();
+        // Push A and B
+        for &val in &a { builder.push_int(val as i64); }
+        for &val in &b { builder.push_int(val as i64); }
+
+        // Stack has 8 items: [a0, a1, a2, a3, b0, b1, b2, b3]
+        // Add component 3: (a3 + b3)
+        // b3 is at top (depth 0). a3 is at depth 4.
+        builder.op_roll(4);
+        builder.op_add();
+        builder.op_dup().push_int(M31_P).push_opcode(Opcode::OpGreaterThanOrEqual).op_if().push_int(M31_P).op_sub().op_endif();
+        builder.op_toaltstack(); // Save res3
+
+        // Component 2: b2 is now top (depth 0), a2 is at depth 3.
+        builder.op_roll(3);
+        builder.op_add();
+        builder.op_dup().push_int(M31_P).push_opcode(Opcode::OpGreaterThanOrEqual).op_if().push_int(M31_P).op_sub().op_endif();
+        builder.op_toaltstack(); // Save res2
+
+        // Component 1: b1 is now top (depth 0), a1 is at depth 2.
+        builder.op_roll(2);
+        builder.op_add();
+        builder.op_dup().push_int(M31_P).push_opcode(Opcode::OpGreaterThanOrEqual).op_if().push_int(M31_P).op_sub().op_endif();
+        builder.op_toaltstack(); // Save res1
+
+        // Component 0: [a0, b0]
+        builder.op_add();
+        builder.op_dup().push_int(M31_P).push_opcode(Opcode::OpGreaterThanOrEqual).op_if().push_int(M31_P).op_sub().op_endif();
+
+        // Restore components from altstack: res1, res2, res3
+        builder.op_fromaltstack();
+        builder.op_fromaltstack();
+        builder.op_fromaltstack();
+
+        let mut vm = Vm::new();
+        let _ = vm.execute(builder.as_bytes()).expect("Execution should succeed");
+
+        assert_eq!(vm.stack().len(), 4);
+        for i in 0..4 {
+            let res = decode_num(&vm.stack()[i], MAX_SCRIPT_NUM_LENGTH).unwrap();
+            assert_eq!(res, expected[i] as i64, "QM31 component {} mismatch", i);
+        }
+        assert!(vm.stats().max_stack_depth <= 10);
+    }
+}
