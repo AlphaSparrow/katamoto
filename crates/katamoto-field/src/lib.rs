@@ -1,6 +1,8 @@
 pub mod m31;
+pub mod qm31;
 
 pub use m31::{M31Script, M31, M31_P};
+pub use qm31::{CM31, QM31, QM31Script};
 
 #[cfg(test)]
 mod tests {
@@ -88,5 +90,52 @@ mod tests {
         let ok = vm.execute(builder.as_bytes()).expect("Multiplication verification failed");
         assert!(ok);
         assert_eq!(vm.stack().last().unwrap(), &[1]);
+    }
+
+    #[test]
+    fn test_qm31_native_math() {
+        let a = QM31::from_u32(1, 2, 3, 4);
+        let b = QM31::from_u32(5, 6, 7, 8);
+
+        // Addition and Subtraction
+        let sum = a + b;
+        assert_eq!(sum, QM31::from_u32(6, 8, 10, 12));
+        assert_eq!(sum - b, a);
+
+        // Multiplication & Inversion
+        let x = QM31::from_u32(12, 34, 56, 78);
+        let inv_x = x.inv().expect("Non-zero QM31 has inverse");
+        let prod = x * inv_x;
+        assert_eq!(prod, QM31::ONE);
+
+        // Distributive law: a * (b + c) == a * b + a * c
+        let c = QM31::from_u32(9, 10, 11, 12);
+        assert_eq!(a * (b + c), (a * b) + (a * c));
+    }
+
+    #[test]
+    fn test_qm31_script_add_sub() {
+        let a = QM31::from_u32(100, 200, 300, 400);
+        let b = QM31::from_u32(50, 75, 125, 150);
+        let expected_sum = a + b;
+
+        let mut builder = ScriptBuilder::new();
+        // Push A components
+        for &comp in &a.to_array() {
+            builder.push_int(comp.as_i64());
+        }
+        // Push B components
+        for &comp in &b.to_array() {
+            builder.push_int(comp.as_i64());
+        }
+        QM31Script::emit_add(&mut builder);
+
+        let mut vm = Vm::new();
+        let ok = vm.execute(builder.as_bytes()).expect("QM31 add failed");
+        assert!(ok);
+        assert_eq!(vm.stack().len(), 4);
+        for (i, &comp) in expected_sum.to_array().iter().enumerate() {
+            assert_eq!(vm.stack()[i], encode_num(comp.as_i64()));
+        }
     }
 }
