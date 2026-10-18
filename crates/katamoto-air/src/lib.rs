@@ -1,13 +1,17 @@
+pub mod bisection;
 pub mod constraints;
 pub mod dsl;
 pub mod quotient;
 pub mod taptree_compiler;
 pub mod trace;
 
+pub use bisection::{BisectionState, DisputeResolutionScript};
 pub use constraints::{BoundaryConstraint, FibonacciTransition};
 pub use dsl::{constant, curr, next, AirDslError, AirSystem, Cell, Expr};
 pub use quotient::{OodQuotientScript, OodQuotientStep};
-pub use taptree_compiler::StarkTapTreeCompiler;
+pub use taptree_compiler::{
+    CircleStarkTapTreeCompiler, LeafTelemetry, PartitioningTelemetry, StarkTapTreeCompiler,
+};
 pub use trace::ExecutionTrace;
 
 #[cfg(test)]
@@ -198,5 +202,80 @@ mod tests {
         let ok = vm.execute(builder.as_bytes()).expect("AIR transition script failed");
         assert!(ok);
         assert_eq!(vm.stack().last().unwrap(), &[1]);
+    }
+
+    #[test]
+    fn test_circle_stark_taptree_compilation_and_telemetry() {
+        let trace = ExecutionTrace::generate_fibonacci(16, 1, 1);
+        let num_circle_fri_queries = 2;
+
+        let (tap_tree, spends, telemetry) =
+            CircleStarkTapTreeCompiler::compile_circle_stark(&trace, num_circle_fri_queries);
+
+        // Expect: boundary (1) + transition (1) + transcript (1) + batch merkle (1) + circle fri folds (2) = 6 leaves
+        assert_eq!(tap_tree.leaves.len(), 6);
+        assert_eq!(spends.len(), 6);
+        assert_eq!(telemetry.total_leaves, 6);
+        assert!(telemetry.conforms_to_consensus);
+        assert!(telemetry.max_script_bytes <= 520, "Scripts must be <= 520 bytes");
+
+        println!(
+            "\nPartitioning Telemetry: {} leaves, max script: {} B, avg: {:.1} B",
+            telemetry.total_leaves, telemetry.max_script_bytes, telemetry.avg_script_bytes
+        );
+
+        // Execute every single leaf on Bitcoin Script VM
+        for (i, spend) in spends.iter().enumerate() {
+            let mut vm = Vm::with_witness(spend.witness_items.clone());
+            let ok = vm
+                .execute(&spend.leaf_script)
+                .unwrap_or_else(|e| panic!("Leaf {} ({}) failed: {:?}", i, spend.leaf_name, e));
+            assert!(ok, "Leaf {} evaluation returned false", spend.leaf_name);
+            assert_eq!(vm.stack().last().unwrap(), &[1]);
+
+            // Validate Bitcoin spending transaction consensus rules
+            let funding_outpoint = OutPoint::new([0x33u8; 32], i as u32);
+            let dummy_p2tr_key = [0x55u8; 32];
+            let tx = CircleStarkTapTreeCompiler::build_broadcast_tx(
+                spend,
+                funding_outpoint,
+                &dummy_p2tr_key,
+                100_000,
+            );
+            assert!(tx.validate_consensus_limits().is_ok());
+        }
+    }
+
+    #[test]
+    fn test_optimistic_bisection_dispute_game() {
+        // Step 0: F_0 = 1, F_1 = 1
+        // Step 1: F_1 = 1, F_2 = 2
+        // Step 2: F_2 = 2, F_3 = 3 (Prover falsely claims 999!)
+        let curr = M31::new(2);
+        let prev = M31::new(1);
+        let fraudulent_claim = M31::new(999); // Valid would be 1 + 2 = 3
+
+        let (_tree, spend) =
+            DisputeResolutionScript::compile_dispute_taptree(fraudulent_claim, curr, prev);
+
+        // Execute the dispute leaf on the VM
+        let mut vm = Vm::with_witness(spend.witness_items.clone());
+        let ok = vm.execute(&spend.leaf_script).expect("Dispute verification failed");
+        assert!(ok, "Fraud proof must return true when prover submitted false claim");
+        assert_eq!(vm.stack().last().unwrap(), &[1]);
+
+        // Build the slash transaction paying the challenger
+        let dispute_bond_outpoint = OutPoint::new([0xdd; 32], 0);
+        let challenger_p2tr_key = [0x99; 32];
+        let tx = DisputeResolutionScript::build_challenge_tx(
+            &spend,
+            dispute_bond_outpoint,
+            &challenger_p2tr_key,
+            1_000_000, // 0.01 BTC slashed bond
+        );
+
+        assert!(tx.validate_consensus_limits().is_ok());
+        assert!(!tx.to_hex().is_empty());
+        println!("Optimistic Fraud Proof TxID: {}", tx.txid());
     }
 }
