@@ -1,9 +1,14 @@
 pub mod builder;
 pub mod opcodes;
+pub mod tx;
 pub mod vm;
 
 pub use builder::{decode_num, encode_num, ScriptBuilder};
 pub use opcodes::Opcode;
+pub use tx::{
+    write_varint, ConsensusError, OutPoint, TestMempoolAccept, Transaction, TxIn, TxOut, Witness,
+    MAX_STANDARD_TX_WEIGHT, SEQUENCE_FINAL,
+};
 pub use vm::{ExecutionStats, Vm, VmError, MAX_ELEMENT_SIZE, MAX_STACK_SIZE};
 
 #[cfg(test)]
@@ -109,5 +114,80 @@ mod tests {
         assert_eq!(vm2.stack()[1], encode_num(4));
         assert_eq!(vm2.stack()[2], encode_num(1));
         assert_eq!(vm2.stack()[3], encode_num(2));
+    }
+
+    #[test]
+    fn test_taproot_tx_serialization_and_weights() {
+        let dummy_txid = [0xabu8; 32];
+        let outpoint = OutPoint::new(dummy_txid, 0);
+        let input = TxIn::new_taproot(outpoint);
+
+        let output_key = [0x55u8; 32];
+        let output = TxOut::p2tr(&output_key, 100_000_000); // 1 BTC
+
+        let witness = Witness::new(vec![
+            vec![0x01, 0x02, 0x03], // witness item
+            vec![0x60],             // dummy script
+            vec![0xc0; 33],         // dummy control block
+        ]);
+
+        let tx = Transaction::new(2, vec![input], vec![output], vec![witness]);
+        assert!(tx.has_witness());
+
+        let raw_bytes = tx.serialize();
+        assert!(!raw_bytes.is_empty());
+        assert_eq!(&raw_bytes[0..4], &2i32.to_le_bytes()); // version
+        assert_eq!(raw_bytes[4], 0x00); // segwit marker
+        assert_eq!(raw_bytes[5], 0x01); // segwit flag
+
+        let legacy_bytes = tx.serialize_legacy();
+        assert!(legacy_bytes.len() < raw_bytes.len());
+
+        let txid = tx.txid();
+        let wtxid = tx.wtxid();
+        assert_eq!(txid.len(), 64);
+        assert_eq!(wtxid.len(), 64);
+        assert_ne!(txid, wtxid);
+
+        assert!(tx.weight() > 0);
+        assert!(tx.vsize() > 0);
+        assert!(tx.validate_consensus_limits().is_ok());
+    }
+
+    #[test]
+    fn test_taproot_tx_consensus_limits_enforced() {
+        let outpoint = OutPoint::new([0x11u8; 32], 0);
+        let input = TxIn::new_taproot(outpoint);
+        let output = TxOut::op_return(b"KATAMOTO_PROOF", 0);
+
+        // Case 1: Witness item exceeding 520 bytes
+        let oversized_item = vec![0x77u8; 521];
+        let invalid_witness = Witness::new(vec![oversized_item]);
+        let invalid_tx = Transaction::new(2, vec![input.clone()], vec![output.clone()], vec![invalid_witness]);
+        assert_eq!(
+            invalid_tx.validate_consensus_limits().unwrap_err(),
+            ConsensusError::WitnessElementTooLarge(521)
+        );
+
+        // Case 2: Witness items count exceeding 1000
+        let many_items = vec![vec![1u8]; 1001];
+        let stack_overflow_wit = Witness::new(many_items);
+        let stack_overflow_tx = Transaction::new(2, vec![input], vec![output], vec![stack_overflow_wit]);
+        assert_eq!(
+            stack_overflow_tx.validate_consensus_limits().unwrap_err(),
+            ConsensusError::WitnessStackOverflow(1001)
+        );
+    }
+
+    #[test]
+    fn test_testmempoolaccept_rpc_formatter() {
+        let raw_hex = "020000000001010000000000";
+        let req = TestMempoolAccept::format_rpc_request(raw_hex);
+        assert!(req.contains("testmempoolaccept"));
+        assert!(req.contains(raw_hex));
+
+        let curl = TestMempoolAccept::format_curl_command(raw_hex, "user", "pass", 18443);
+        assert!(curl.contains("18443"));
+        assert!(curl.contains("user:pass"));
     }
 }

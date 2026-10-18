@@ -188,4 +188,17 @@ impl TaprootStarkSpend {
     pub fn total_witness_size(&self) -> usize {
         self.full_witness_stack().iter().map(|item| item.len()).sum()
     }
+
+    /// Builds a full signed/witnessed Bitcoin transaction spending this Taproot leaf
+    pub fn build_spending_tx(
+        &self,
+        funding_outpoint: katamoto_script::OutPoint,
+        destination_script_pubkey: Vec<u8>,
+        output_satoshis: u64,
+    ) -> katamoto_script::Transaction {
+        let input = katamoto_script::TxIn::new_taproot(funding_outpoint);
+        let output = katamoto_script::TxOut::new(output_satoshis, destination_script_pubkey);
+        let witness = katamoto_script::Witness::new(self.full_witness_stack());
+        katamoto_script::Transaction::new(2, vec![input], vec![output], vec![witness])
+    }
 }
