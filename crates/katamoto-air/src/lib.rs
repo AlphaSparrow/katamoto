@@ -1,9 +1,11 @@
 pub mod constraints;
+pub mod dsl;
 pub mod quotient;
 pub mod taptree_compiler;
 pub mod trace;
 
 pub use constraints::{BoundaryConstraint, FibonacciTransition};
+pub use dsl::{constant, curr, next, AirDslError, AirSystem, Cell, Expr};
 pub use quotient::{OodQuotientScript, OodQuotientStep};
 pub use taptree_compiler::StarkTapTreeCompiler;
 pub use trace::ExecutionTrace;
@@ -142,5 +144,59 @@ mod tests {
             tap_tree.leaves.len(),
             hex::encode(tap_tree.root())
         );
+    }
+
+    #[test]
+    fn test_generalized_air_dsl_and_multi_column_trace() {
+        // Multi-column computation:
+        // Col 0: counter (0, 1, 2, 3...)
+        // Col 1: doubling (1, 2, 4, 8...)
+        // Col 2: sum accumulator (Col0 + Col1)
+        let n = 8;
+        let mut col0 = Vec::with_capacity(n);
+        let mut col1 = Vec::with_capacity(n);
+        let mut col2 = Vec::with_capacity(n);
+
+        let mut c0 = M31::new(0);
+        let mut c1 = M31::new(1);
+        for _ in 0..n {
+            col0.push(c0);
+            col1.push(c1);
+            col2.push(c0 + c1);
+            c0 = c0 + M31::ONE;
+            c1 = c1 * M31::new(2);
+        }
+
+        let trace = ExecutionTrace::new(vec![col0, col1, col2]);
+
+        // Define AIR constraints using fluent DSL
+        let mut air = AirSystem::new(3);
+
+        // Constraint 1: Counter transition: next(0) == curr(0) + 1
+        air.assert_eq(next(0), curr(0) + constant(1));
+
+        // Constraint 2: Doubling transition: next(1) == curr(1) * 2
+        air.assert_eq(next(1), curr(1) * constant(2));
+
+        // Constraint 3: Accumulator relation: curr(2) == curr(0) + curr(1)
+        air.assert_eq(curr(2), curr(0) + curr(1));
+
+        // Boundary constraint: Col 0 starts at 0, Col 1 starts at 1
+        air.assert_boundary(0, 0, M31::ZERO);
+        air.assert_boundary(1, 0, M31::ONE);
+
+        // Verify that the trace satisfies the declared AIR
+        let res = air.verify_trace(&trace);
+        assert!(res.is_ok(), "Trace must satisfy AIR constraints");
+
+        // Verify Bitcoin Script verifier for linear transition
+        let mut builder = ScriptBuilder::new();
+        AirSystem::emit_linear_transition_verifier(&mut builder);
+
+        let witness = AirSystem::create_linear_witness(trace.columns[0][3], trace.columns[1][3], trace.columns[2][3]);
+        let mut vm = Vm::with_witness(witness);
+        let ok = vm.execute(builder.as_bytes()).expect("AIR transition script failed");
+        assert!(ok);
+        assert_eq!(vm.stack().last().unwrap(), &[1]);
     }
 }

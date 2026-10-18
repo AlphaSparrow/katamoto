@@ -151,6 +151,41 @@ impl QM31 {
     pub fn to_array(self) -> [M31; 4] {
         [self.c0.a, self.c0.b, self.c1.a, self.c1.b]
     }
+
+    /// In-place batch addition: dst[i] = dst[i] + src[i]
+    #[inline(always)]
+    pub fn batch_add(dst: &mut [QM31], src: &[QM31]) {
+        assert_eq!(dst.len(), src.len());
+        for (d, s) in dst.iter_mut().zip(src.iter()) {
+            *d = *d + *s;
+        }
+    }
+
+    /// In-place batch subtraction: dst[i] = dst[i] - src[i]
+    #[inline(always)]
+    pub fn batch_sub(dst: &mut [QM31], src: &[QM31]) {
+        assert_eq!(dst.len(), src.len());
+        for (d, s) in dst.iter_mut().zip(src.iter()) {
+            *d = *d - *s;
+        }
+    }
+
+    /// In-place batch multiplication: dst[i] = dst[i] * src[i]
+    #[inline(always)]
+    pub fn batch_mul(dst: &mut [QM31], src: &[QM31]) {
+        assert_eq!(dst.len(), src.len());
+        for (d, s) in dst.iter_mut().zip(src.iter()) {
+            *d = *d * *s;
+        }
+    }
+
+    /// In-place batch scalar multiplication: dst[i] = dst[i] * scalar
+    #[inline(always)]
+    pub fn batch_scale(dst: &mut [QM31], scalar: QM31) {
+        for d in dst.iter_mut() {
+            *d = *d * scalar;
+        }
+    }
 }
 
 impl Add for QM31 {

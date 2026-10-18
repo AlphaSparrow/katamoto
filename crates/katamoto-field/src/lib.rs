@@ -1,4 +1,5 @@
 pub mod circle;
+pub mod fft;
 pub mod m31;
 pub mod qm31;
 
@@ -6,6 +7,7 @@ pub use circle::{
     circle_half_point, circle_subgroup_generator, m31_sqrt, CircleDomain, CirclePoint,
     CircleScript,
 };
+pub use fft::{bit_reverse_index, bit_reverse_permute, circle_fft, circle_ifft};
 pub use m31::{M31Script, M31, M31_P};
 pub use qm31::{CM31, QM31, QM31Script};
 
@@ -209,5 +211,64 @@ mod tests {
         let ok = vm.execute(builder.as_bytes()).expect("Circle point add verification failed");
         assert!(ok);
         assert_eq!(vm.stack().last().unwrap(), &[1]);
+    }
+
+    #[test]
+    fn test_circle_fft_and_ifft_roundtrip() {
+        let domain_8 = CircleDomain::coset(3);
+        let evals: Vec<M31> = (0..8).map(|i| M31::new((i * 123 + 456) as u64)).collect();
+
+        // Forward Circle FFT
+        let coeffs = circle_fft(&evals, &domain_8);
+        assert_eq!(coeffs.len(), 8);
+
+        // Inverse Circle FFT (Interpolation)
+        let recovered = circle_ifft(&coeffs, &domain_8);
+        assert_eq!(recovered.len(), 8);
+
+        for i in 0..8 {
+            assert_eq!(
+                evals[i], recovered[i],
+                "Mismatch at index {}: original={:?}, recovered={:?}",
+                i, evals[i], recovered[i]
+            );
+        }
+
+        // Test with order 16 domain
+        let domain_16 = CircleDomain::coset(4);
+        let evals_16: Vec<M31> = (0..16).map(|i| M31::new((i * 789 + 101) as u64)).collect();
+        let coeffs_16 = circle_fft(&evals_16, &domain_16);
+        let recovered_16 = circle_ifft(&coeffs_16, &domain_16);
+        for i in 0..16 {
+            assert_eq!(evals_16[i], recovered_16[i]);
+        }
+    }
+
+    #[test]
+    fn test_bit_reversal_permutation() {
+        let mut data = vec![0, 1, 2, 3, 4, 5, 6, 7];
+        bit_reverse_permute(&mut data);
+        assert_eq!(data, vec![0, 4, 2, 6, 1, 5, 3, 7]);
+        // Applying again recovers identity
+        bit_reverse_permute(&mut data);
+        assert_eq!(data, vec![0, 1, 2, 3, 4, 5, 6, 7]);
+    }
+
+    #[test]
+    fn test_batch_field_operations() {
+        let mut a = vec![M31::new(10), M31::new(20), M31::new(30)];
+        let b = vec![M31::new(5), M31::new(15), M31::new(25)];
+
+        M31::batch_add(&mut a, &b);
+        assert_eq!(a, vec![M31::new(15), M31::new(35), M31::new(55)]);
+
+        M31::batch_scale(&mut a, M31::new(2));
+        assert_eq!(a, vec![M31::new(30), M31::new(70), M31::new(110)]);
+
+        let mut qa = vec![QM31::from_u32(1, 2, 3, 4), QM31::from_u32(5, 6, 7, 8)];
+        let qb = vec![QM31::from_u32(10, 10, 10, 10), QM31::from_u32(20, 20, 20, 20)];
+        QM31::batch_add(&mut qa, &qb);
+        assert_eq!(qa[0], QM31::from_u32(11, 12, 13, 14));
+        assert_eq!(qa[1], QM31::from_u32(25, 26, 27, 28));
     }
 }

@@ -200,6 +200,26 @@ impl CircleDomain {
             points,
         }
     }
+
+    /// Coset domain: D = { G_{2N} + j * G_N }
+    /// In a coset domain, x != 0 and y != 0 for every point, enabling division-free FFT twiddles!
+    pub fn coset(log_size: usize) -> Self {
+        let size = 1 << log_size;
+        let shift = circle_subgroup_generator(log_size + 1);
+        let gen = circle_subgroup_generator(log_size);
+        let mut points = Vec::with_capacity(size);
+        let mut curr = shift;
+        for _ in 0..size {
+            points.push(curr);
+            curr = curr + gen;
+        }
+        Self {
+            log_size,
+            size,
+            generator: gen,
+            points,
+        }
+    }
 }
 
 /// Bitcoin Script Gadgets for Circle Curve Point Verification

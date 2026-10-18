@@ -1,9 +1,11 @@
+pub mod batch_merkle;
 pub mod circle_folding;
 pub mod folding;
 pub mod merkle;
 pub mod taproot;
 pub mod transcript;
 
+pub use batch_merkle::{BatchMerkleScript, BatchMerkleTree};
 pub use circle_folding::{
     CircleFriRoundQuery, CircleFriScript, CircleFriXStep, CircleFriYStep,
 };
@@ -311,5 +313,36 @@ mod tests {
             builder.opcode_count(),
             vm.stats().max_stack_depth
         );
+    }
+
+    #[test]
+    fn test_batch_merkle_tree_multi_column_verification() {
+        use katamoto_field::M31;
+
+        // 3 trace columns of length 8
+        let col0: Vec<M31> = (0..8).map(|i| M31::new(i * 10)).collect();
+        let col1: Vec<M31> = (0..8).map(|i| M31::new(i * 20 + 1)).collect();
+        let col2: Vec<M31> = (0..8).map(|i| M31::new(i * 30 + 2)).collect();
+
+        let batch_tree = BatchMerkleTree::new(&[col0, col1, col2]);
+        assert_eq!(batch_tree.depth(), 3);
+        let root = batch_tree.root();
+
+        // Prove row 5
+        let (row_vals, proof) = batch_tree.prove_row(5);
+        assert_eq!(row_vals.len(), 3);
+        assert_eq!(row_vals[0].value(), 50);
+        assert_eq!(row_vals[1].value(), 101);
+        assert_eq!(row_vals[2].value(), 152);
+
+        // Build Bitcoin Script verifier that reconstructs leaf from 3 columns and verifies path
+        let mut builder = ScriptBuilder::new();
+        BatchMerkleScript::emit_row_verifier(&mut builder, 3, batch_tree.depth(), &root);
+
+        let witness = BatchMerkleScript::create_row_witness(&row_vals, &proof);
+        let mut vm = Vm::with_witness(witness);
+        let ok = vm.execute(builder.as_bytes()).expect("Batch Merkle verification failed");
+        assert!(ok);
+        assert_eq!(vm.stack().last().unwrap(), &[1]);
     }
 }
