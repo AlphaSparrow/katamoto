@@ -1,4 +1,4 @@
-use katamoto_field::{M31Script, M31};
+use katamoto_field::M31;
 use katamoto_script::{builder::encode_num, ScriptBuilder};
 
 /// FRI Folding Proof data for a single query step

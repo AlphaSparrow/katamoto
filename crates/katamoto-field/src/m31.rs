@@ -139,25 +139,24 @@ impl M31Script {
 
     /// Emits script to verify: a * b == c (mod M31_P)
     /// Witness Layout Expected on Stack:
-    /// `[expected_c, a, bit_30, bit_29, ..., bit_0]` (where sum(bit_i * 2^i) == b)
+    /// `[expected_c, a, bit_30, bit_29, ..., bit_0]` (where sum(bit_i * 2^i) == b, with bit_0 at the top)
     ///
     /// Executes double-and-add inside Bitcoin Script and verifies equality with expected_c.
     pub fn emit_mul_verify(builder: &mut ScriptBuilder) {
-        // Accumulator for product: acc = 0
-        builder.push_int(0); // [c, a, bits..., acc]
+        // Main stack: [expected_c, a, bit_30, bit_29, ..., bit_0]
+        // Move 'a' to the top and transfer to altstack:
+        // bit_0 is at depth 0, bit_30 is at depth 30, 'a' is at depth 31.
+        builder.op_roll(31);
+        builder.op_toaltstack(); // altstack: [a]
 
-        // For each bit from bit_0 up to bit_30:
+        // Push accumulator = 0 and transfer to altstack:
+        builder.push_int(0);
+        builder.op_toaltstack(); // altstack: [a, acc = 0]
+
+        // Main stack now contains: [expected_c, bit_30, bit_29, ..., bit_0]
+        // Top of main stack is bit_0.
         for i in 0..31 {
-            // Stack at start of iteration:
-            // depth to a is (31 - i + 2)
-            // depth to bit_i is (31 - i + 1)
-            // We want to do: if bit_i == 1 { acc = (acc + a) % P }; a = (2 * a) % P
-            
-            // Bring bit_i to top
-            let bit_depth = 31 - i + 1;
-            builder.op_roll(bit_depth as i64); // [..., acc, bit_i]
-
-            // Validate bit is either 0 or 1
+            // Validate bit_i is binary {0, 1}
             builder.op_dup();
             builder.push_int(0);
             builder.push_opcode(Opcode::OpNumEqual);
@@ -165,29 +164,35 @@ impl M31Script {
             builder.push_int(1);
             builder.push_opcode(Opcode::OpNumEqual);
             builder.push_opcode(Opcode::OpBoolOr);
-            builder.op_verify(); // stack: [..., acc, bit_i]
+            builder.op_verify(); // leaves bit_i on top
 
             // If bit_i == 1: acc = (acc + a) % P
             builder.op_if();
-            // Fetch 'a': depth is currently (31 - i + 1)
-            let a_depth = 31 - i + 1;
-            builder.op_pick(a_depth as i64); // [..., acc, a]
-            Self::emit_add(builder); // [..., (acc + a) % P]
+            builder.op_fromaltstack(); // pop acc -> [..., acc]
+            builder.op_fromaltstack(); // pop a   -> [..., acc, a]
+            builder.op_dup();          // duplicate a: [..., acc, a, a]
+            builder.op_toaltstack();   // restore 'a' to altstack: altstack=[a]
+            Self::emit_add(builder);   // [..., (acc + a) % P]
+            builder.op_toaltstack();   // store new_acc to altstack: altstack=[a, new_acc]
             builder.op_endif();
 
-            // Double 'a' for the next bit, unless this is the last bit
+            // Double 'a' for the next round (unless this is the last bit round)
             if i < 30 {
-                let a_depth = 31 - i;
-                builder.op_roll(a_depth as i64); // bring 'a' to top: [..., acc, a]
-                Self::emit_double(builder); // [..., acc, (2*a)%P]
-                builder.op_swap(); // keep acc on top: [..., (2*a)%P, acc]
+                builder.op_fromaltstack(); // pop acc
+                builder.op_fromaltstack(); // pop a
+                Self::emit_double(builder); // (2 * a) % P
+                builder.op_toaltstack();   // push doubled 'a': altstack=[2*a]
+                builder.op_toaltstack();   // push acc: altstack=[2*a, acc]
             }
         }
 
-        // Now stack is: [expected_c, final_a, final_acc]
-        builder.op_swap();
-        builder.op_drop(); // drop final_a -> [expected_c, final_acc]
-        builder.op_equalverify(); // confirms final_acc == expected_c
-        builder.push_int(1); // leaves TRUE on stack
+        // All 31 bits have been processed and removed from main stack.
+        // Main stack now contains: [expected_c]
+        // Altstack contains: [final_a, final_acc]
+        builder.op_fromaltstack(); // pop final_acc to main stack: [expected_c, final_acc]
+        builder.op_equalverify();  // verifies expected_c == final_acc and drops both
+        builder.op_fromaltstack(); // pop final_a from altstack
+        builder.op_drop();         // clean up final_a
+        builder.push_int(1);       // leaves TRUE (1) on stack
     }
 }

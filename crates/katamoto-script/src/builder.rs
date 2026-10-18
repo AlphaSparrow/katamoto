@@ -139,6 +139,8 @@ impl ScriptBuilder {
     pub fn op_rot(&mut self) -> &mut Self { self.push_opcode(Opcode::OpRot) }
     pub fn op_over(&mut self) -> &mut Self { self.push_opcode(Opcode::OpOver) }
     pub fn op_nip(&mut self) -> &mut Self { self.push_opcode(Opcode::OpNip) }
+    pub fn op_toaltstack(&mut self) -> &mut Self { self.push_opcode(Opcode::OpToAltStack) }
+    pub fn op_fromaltstack(&mut self) -> &mut Self { self.push_opcode(Opcode::OpFromAltStack) }
     pub fn op_roll(&mut self, depth: i64) -> &mut Self {
         self.push_int(depth);
         self.push_opcode(Opcode::OpRoll)
@@ -149,6 +151,22 @@ impl ScriptBuilder {
     }
     pub fn op_equal(&mut self) -> &mut Self { self.push_opcode(Opcode::OpEqual) }
     pub fn op_equalverify(&mut self) -> &mut Self { self.push_opcode(Opcode::OpEqualVerify) }
+    pub fn op_num_equal(&mut self) -> &mut Self { self.push_opcode(Opcode::OpNumEqual) }
+    pub fn op_num_equalverify(&mut self) -> &mut Self { self.push_opcode(Opcode::OpNumEqualVerify) }
+    pub fn op_num_not_equal(&mut self) -> &mut Self { self.push_opcode(Opcode::OpNumNotEqual) }
+    pub fn op_bool_and(&mut self) -> &mut Self { self.push_opcode(Opcode::OpBoolAnd) }
+    pub fn op_bool_or(&mut self) -> &mut Self { self.push_opcode(Opcode::OpBoolOr) }
+    pub fn op_not(&mut self) -> &mut Self { self.push_opcode(Opcode::OpNot) }
+    pub fn op_less_than(&mut self) -> &mut Self { self.push_opcode(Opcode::OpLessThan) }
+    pub fn op_greater_than(&mut self) -> &mut Self { self.push_opcode(Opcode::OpGreaterThan) }
+    pub fn op_less_than_or_equal(&mut self) -> &mut Self { self.push_opcode(Opcode::OpLessThanOrEqual) }
+    pub fn op_greater_than_or_equal(&mut self) -> &mut Self { self.push_opcode(Opcode::OpGreaterThanOrEqual) }
+    pub fn op_min(&mut self) -> &mut Self { self.push_opcode(Opcode::OpMin) }
+    pub fn op_max(&mut self) -> &mut Self { self.push_opcode(Opcode::OpMax) }
+    pub fn op_within(&mut self) -> &mut Self { self.push_opcode(Opcode::OpWithin) }
+    pub fn op_2dup(&mut self) -> &mut Self { self.push_opcode(Opcode::Op2Dup) }
+    pub fn op_2drop(&mut self) -> &mut Self { self.push_opcode(Opcode::Op2Drop) }
+    pub fn op_ifdup(&mut self) -> &mut Self { self.push_opcode(Opcode::OpIfDup) }
     pub fn op_verify(&mut self) -> &mut Self { self.push_opcode(Opcode::OpVerify) }
     pub fn op_add(&mut self) -> &mut Self { self.push_opcode(Opcode::OpAdd) }
     pub fn op_sub(&mut self) -> &mut Self { self.push_opcode(Opcode::OpSub) }

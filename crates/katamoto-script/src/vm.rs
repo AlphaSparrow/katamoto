@@ -5,7 +5,7 @@ use thiserror::Error;
 
 pub const MAX_STACK_SIZE: usize = 1000;
 pub const MAX_ELEMENT_SIZE: usize = 520;
-pub const MAX_SCRIPT_NUM_LENGTH: usize = 4; // 32-bit math standard in Bitcoin Script
+pub const MAX_SCRIPT_NUM_LENGTH: usize = 8; // 64-bit ScriptNum support for Tapscript arithmetic
 
 #[derive(Error, Debug, PartialEq, Eq)]
 pub enum VmError {
@@ -318,6 +318,28 @@ impl Vm {
                     self.push(item)?;
                 }
 
+                Opcode::OpIfDup => {
+                    let top = self.stack.last().ok_or(VmError::StackUnderflow { needed: 1, available: 0 })?;
+                    if top.iter().any(|&b| b != 0) {
+                        let clone = top.clone();
+                        self.push(clone)?;
+                    }
+                }
+                Opcode::Op2Swap => {
+                    let n = self.stack.len();
+                    if n < 4 { return Err(VmError::StackUnderflow { needed: 4, available: n }); }
+                    self.stack.swap(n - 4, n - 2);
+                    self.stack.swap(n - 3, n - 1);
+                }
+                Opcode::Op2Rot => {
+                    let n = self.stack.len();
+                    if n < 6 { return Err(VmError::StackUnderflow { needed: 6, available: n }); }
+                    let x1 = self.stack.remove(n - 6);
+                    let x2 = self.stack.remove(n - 6);
+                    self.stack.push(x1);
+                    self.stack.push(x2);
+                }
+
                 // BIP-347 OP_CAT
                 Opcode::OpCat => {
                     let y = self.pop()?;
@@ -381,6 +403,16 @@ impl Vm {
                     let a = self.pop_num()?;
                     self.push_num(if a != 0 { 1 } else { 0 })?;
                 }
+                Opcode::OpBoolAnd => {
+                    let b = self.pop_num()?;
+                    let a = self.pop_num()?;
+                    self.push_num(if a != 0 && b != 0 { 1 } else { 0 })?;
+                }
+                Opcode::OpBoolOr => {
+                    let b = self.pop_num()?;
+                    let a = self.pop_num()?;
+                    self.push_num(if a != 0 || b != 0 { 1 } else { 0 })?;
+                }
                 Opcode::OpNumEqual => {
                     let b = self.pop_num()?;
                     let a = self.pop_num()?;
@@ -393,6 +425,11 @@ impl Vm {
                         return Err(VmError::VerifyFailed);
                     }
                 }
+                Opcode::OpNumNotEqual => {
+                    let b = self.pop_num()?;
+                    let a = self.pop_num()?;
+                    self.push_num(if a != b { 1 } else { 0 })?;
+                }
                 Opcode::OpLessThan => {
                     let b = self.pop_num()?;
                     let a = self.pop_num()?;
@@ -403,6 +440,16 @@ impl Vm {
                     let a = self.pop_num()?;
                     self.push_num(if a > b { 1 } else { 0 })?;
                 }
+                Opcode::OpLessThanOrEqual => {
+                    let b = self.pop_num()?;
+                    let a = self.pop_num()?;
+                    self.push_num(if a <= b { 1 } else { 0 })?;
+                }
+                Opcode::OpGreaterThanOrEqual => {
+                    let b = self.pop_num()?;
+                    let a = self.pop_num()?;
+                    self.push_num(if a >= b { 1 } else { 0 })?;
+                }
                 Opcode::OpMin => {
                     let b = self.pop_num()?;
                     let a = self.pop_num()?;
@@ -412,6 +459,12 @@ impl Vm {
                     let b = self.pop_num()?;
                     let a = self.pop_num()?;
                     self.push_num(a.max(b))?;
+                }
+                Opcode::OpWithin => {
+                    let max = self.pop_num()?;
+                    let min = self.pop_num()?;
+                    let x = self.pop_num()?;
+                    self.push_num(if x >= min && x < max { 1 } else { 0 })?;
                 }
 
                 // Hashes

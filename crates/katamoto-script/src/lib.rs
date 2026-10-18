@@ -80,4 +80,34 @@ mod tests {
             assert_eq!(num, dec);
         }
     }
+
+    #[test]
+    fn test_comparison_and_logic_opcodes() {
+        // Test GreaterThanOrEqual & LessThanOrEqual
+        let mut b = ScriptBuilder::new();
+        b.push_int(10).push_int(10).op_greater_than_or_equal(); // 1
+        b.push_int(9).push_int(10).op_less_than_or_equal(); // 1
+        b.op_bool_and(); // 1
+        b.push_int(5).push_int(2).push_int(10).op_within(); // 1 (2 <= 5 < 10)
+        b.op_bool_and(); // 1
+        b.push_int(7).push_int(8).op_num_not_equal(); // 1
+        b.op_bool_and(); // 1
+
+        let mut vm = Vm::new();
+        let ok = vm.execute(b.as_bytes()).unwrap();
+        assert!(ok);
+        assert_eq!(vm.stack().last().unwrap(), &[1]);
+
+        // Test 2SWAP and 2ROT
+        let mut b2 = ScriptBuilder::new();
+        // push 1, 2, 3, 4 -> 2SWAP -> 3, 4, 1, 2
+        b2.push_int(1).push_int(2).push_int(3).push_int(4);
+        b2.push_opcode(Opcode::Op2Swap);
+        let mut vm2 = Vm::new();
+        vm2.execute(b2.as_bytes()).unwrap();
+        assert_eq!(vm2.stack()[0], encode_num(3));
+        assert_eq!(vm2.stack()[1], encode_num(4));
+        assert_eq!(vm2.stack()[2], encode_num(1));
+        assert_eq!(vm2.stack()[3], encode_num(2));
+    }
 }
