@@ -1,9 +1,11 @@
 pub mod folding;
 pub mod merkle;
+pub mod taproot;
 pub mod transcript;
 
 pub use folding::{FriQueryStep, FriRoundQuery, FriScript};
 pub use merkle::{hash_node, MerkleProof, MerkleScript, MerkleTree};
+pub use taproot::{tagged_hash, TapLeaf, TapTree, TaprootStarkSpend, TAPSCRIPT_LEAF_VERSION};
 pub use transcript::{Transcript, TranscriptScript, TRANSCRIPT_INIT_SEED};
 
 #[cfg(test)]
@@ -167,6 +169,67 @@ mod tests {
             vm.stats().opcodes_executed,
             vm.stats().max_stack_depth,
             builder.len()
+        );
+    }
+
+    #[test]
+    fn test_taproot_stark_tree_and_leaf_spend() {
+        use katamoto_field::M31;
+
+        // Leaf 0: Fiat-Shamir Transcript Leaf
+        let mut transcript = Transcript::new();
+        let dummy_trace_root = [0x77u8; 32];
+        transcript.absorb(&dummy_trace_root);
+        let (_challenge, _prefix, _suffix) = transcript.squeeze_m31_challenge();
+        let mut b0 = ScriptBuilder::new();
+        TranscriptScript::emit_verify_challenge_extraction(&mut b0);
+        let leaf_0 = TapLeaf::new("fiat_shamir_leaf", b0.to_bytes());
+
+        // Leaf 1: FRI Colinearity Leaf
+        let x = M31::new(12345);
+        let fx = M31::new(6789);
+        let f_neg_x = M31::new(4321);
+        let alpha = M31::new(999);
+        let step = FriQueryStep::new(x, fx, f_neg_x, alpha);
+        let (lhs, t1, t2) = step.decompose();
+        let mut b1 = ScriptBuilder::new();
+        FriScript::emit_colinearity_verifier(&mut b1);
+        let leaf_1 = TapLeaf::new("fri_colinearity_leaf", b1.to_bytes());
+
+        // Assemble TapTree containing both leaves
+        let tap_tree = TapTree::new(vec![leaf_0.clone(), leaf_1.clone()]);
+        let tree_root = tap_tree.root();
+        assert_ne!(tree_root, [0u8; 32]);
+
+        // Simulated internal NUMS key (H point on secp256k1)
+        let internal_key = [0x02u8; 32];
+        let tweak = tap_tree.tweak(&internal_key);
+        assert_ne!(tweak, [0u8; 32]);
+
+        // Generate control block for Leaf 1 (FRI Colinearity)
+        let ctrl_block_1 = tap_tree.control_block(1, &internal_key);
+        assert_eq!(ctrl_block_1.len(), 33 + 32); // version (1) + internal_key (32) + 1 sibling (32)
+
+        // Generate full witness spend package
+        let witness_items = FriScript::create_colinearity_witness(lhs, t1, t2);
+        let spend = TaprootStarkSpend::new(
+            &leaf_1.name,
+            witness_items.clone(),
+            leaf_1.script.clone(),
+            ctrl_block_1,
+        );
+        assert!(spend.total_witness_size() > 0);
+
+        // Execute Leaf 1 in the Bitcoin Script VM with its witness items
+        let mut vm = Vm::with_witness(witness_items);
+        let ok = vm.execute(&leaf_1.script).expect("Taproot leaf 1 execution failed");
+        assert!(ok);
+        assert_eq!(vm.stack().last().unwrap(), &[1]);
+
+        println!(
+            "Taproot STARK Tree Verified: TapTreeRoot={}, Witness Size={} B",
+            hex::encode(tree_root),
+            spend.total_witness_size()
         );
     }
 }
