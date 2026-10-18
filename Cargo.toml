@@ -4,6 +4,7 @@ members = [
     "crates/katamoto-script",
     "crates/katamoto-field",
     "crates/katamoto-fri",
+    "crates/katamoto-air",
     "crates/katamoto-cli",
 ]
 
