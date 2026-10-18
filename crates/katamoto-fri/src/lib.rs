@@ -2,7 +2,7 @@ pub mod folding;
 pub mod merkle;
 pub mod transcript;
 
-pub use folding::{FriQueryStep, FriScript};
+pub use folding::{FriQueryStep, FriRoundQuery, FriScript};
 pub use merkle::{hash_node, MerkleProof, MerkleScript, MerkleTree};
 pub use transcript::{Transcript, TranscriptScript, TRANSCRIPT_INIT_SEED};
 
@@ -118,5 +118,55 @@ mod tests {
         let ok2 = vm2.execute(b2.as_bytes()).expect("Challenge extraction script failed");
         assert!(ok2);
         assert_eq!(vm2.stack().last().unwrap(), &[1]);
+    }
+
+    #[test]
+    fn test_integrated_fri_round_verification() {
+        use katamoto_field::M31;
+
+        // Build a layer tree of 8 evaluations
+        let mut leaves = Vec::new();
+        for i in 0..8 {
+            let hash = Sha256::digest(format!("eval_layer_{}", i).as_bytes());
+            let mut arr = [0u8; 32];
+            arr.copy_from_slice(&hash);
+            leaves.push(arr);
+        }
+        let tree = MerkleTree::new(leaves);
+        let root = tree.root();
+
+        // Query point: x = 12345, -x = M31_P - 12345
+        let x = M31::new(12345);
+        let fx = M31::new(6789);
+        let f_neg_x = M31::new(4321);
+        let alpha = M31::new(999);
+
+        let step = FriQueryStep::new(x, fx, f_neg_x, alpha);
+
+        // Prove leaf 2 (for fx) and leaf 5 (for f_neg_x)
+        let proof_fx = tree.prove(2);
+        let proof_f_neg_x = tree.prove(5);
+
+        let query = FriRoundQuery {
+            step,
+            fx_merkle_proof: proof_fx,
+            f_neg_x_merkle_proof: proof_f_neg_x,
+        };
+
+        let mut builder = ScriptBuilder::new();
+        FriScript::emit_integrated_round_verifier(&mut builder, tree.depth(), &root);
+
+        let witness = FriScript::create_integrated_witness(&query);
+        let mut vm = Vm::with_witness(witness);
+        let ok = vm.execute(builder.as_bytes()).expect("Integrated FRI round verification failed");
+        assert!(ok);
+        assert_eq!(vm.stack().last().unwrap(), &[1]);
+
+        println!(
+            "Integrated FRI Round Verifier Stats: opcodes={}, max_stack_depth={}, script_size={} B",
+            vm.stats().opcodes_executed,
+            vm.stats().max_stack_depth,
+            builder.len()
+        );
     }
 }
