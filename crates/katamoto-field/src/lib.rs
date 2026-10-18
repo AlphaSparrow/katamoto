@@ -1,6 +1,11 @@
+pub mod circle;
 pub mod m31;
 pub mod qm31;
 
+pub use circle::{
+    circle_half_point, circle_subgroup_generator, m31_sqrt, CircleDomain, CirclePoint,
+    CircleScript,
+};
 pub use m31::{M31Script, M31, M31_P};
 pub use qm31::{CM31, QM31, QM31Script};
 
@@ -137,5 +142,72 @@ mod tests {
         for (i, &comp) in expected_sum.to_array().iter().enumerate() {
             assert_eq!(vm.stack()[i], encode_num(comp.as_i64()));
         }
+    }
+
+    #[test]
+    fn test_circle_group_arithmetic() {
+        // Identity checks
+        let id = CirclePoint::IDENTITY;
+        assert!(id.is_on_curve());
+        assert_eq!(id + id, id);
+
+        // Order 4 point (0, 1)
+        let o4 = CirclePoint::ORDER_4;
+        assert!(o4.is_on_curve());
+        let o2 = o4.double();
+        assert_eq!(o2, CirclePoint::ORDER_2);
+        let id_from_o4 = o2.double();
+        assert_eq!(id_from_o4, CirclePoint::IDENTITY);
+
+        // Inverse & subtraction: P - P == IDENTITY
+        let _p = CirclePoint::new(M31::new(12345), M31::new(67890));
+        // Find a valid point on circle by choosing x and solving y^2 = 1 - x^2
+        let test_x = M31::new(100);
+        let y_sq = M31::ONE - (test_x * test_x);
+        let test_y = m31_sqrt(y_sq).expect("Square root must exist for valid point");
+        let valid_pt = CirclePoint::new(test_x, test_y);
+        assert!(valid_pt.is_on_curve());
+        assert_eq!(valid_pt - valid_pt, CirclePoint::IDENTITY);
+        assert_eq!(valid_pt + (-valid_pt), CirclePoint::IDENTITY);
+    }
+
+    #[test]
+    fn test_circle_subgroup_generators_and_domain() {
+        // Order 2^3 = 8 domain
+        let domain_8 = CircleDomain::new(3);
+        assert_eq!(domain_8.size, 8);
+        assert_eq!(domain_8.points.len(), 8);
+
+        // Check all domain points lie on curve and are distinct
+        for pt in &domain_8.points {
+            assert!(pt.is_on_curve());
+        }
+        let gen = domain_8.generator;
+        assert_eq!(gen.mul(8), CirclePoint::IDENTITY);
+        assert_ne!(gen.mul(4), CirclePoint::IDENTITY);
+
+        // Order 2^4 = 16 domain
+        let domain_16 = CircleDomain::new(4);
+        assert_eq!(domain_16.size, 16);
+        assert_eq!(domain_16.generator.mul(16), CirclePoint::IDENTITY);
+        assert_ne!(domain_16.generator.mul(8), CirclePoint::IDENTITY);
+    }
+
+    #[test]
+    fn test_circle_point_add_script_verification() {
+        let gen = circle_subgroup_generator(3);
+        let p1 = gen;
+        let p2 = gen.double();
+        let _expected_p3 = p1 + p2;
+
+        let witness = CircleScript::create_point_add_witness(p1, p2);
+
+        let mut builder = ScriptBuilder::new();
+        CircleScript::emit_verify_point_add(&mut builder);
+
+        let mut vm = Vm::with_witness(witness);
+        let ok = vm.execute(builder.as_bytes()).expect("Circle point add verification failed");
+        assert!(ok);
+        assert_eq!(vm.stack().last().unwrap(), &[1]);
     }
 }

@@ -1,8 +1,12 @@
+pub mod circle_folding;
 pub mod folding;
 pub mod merkle;
 pub mod taproot;
 pub mod transcript;
 
+pub use circle_folding::{
+    CircleFriRoundQuery, CircleFriScript, CircleFriXStep, CircleFriYStep,
+};
 pub use folding::{FriQueryStep, FriRoundQuery, FriScript};
 pub use merkle::{hash_node, MerkleProof, MerkleScript, MerkleTree};
 pub use taproot::{tagged_hash, TapLeaf, TapTree, TaprootStarkSpend, TAPSCRIPT_LEAF_VERSION};
@@ -230,6 +234,82 @@ mod tests {
             "Taproot STARK Tree Verified: TapTreeRoot={}, Witness Size={} B",
             hex::encode(tree_root),
             spend.total_witness_size()
+        );
+
+        // Build complete Bitcoin transaction spending this STARK leaf
+        let funding_outpoint = katamoto_script::OutPoint::new([0x33u8; 32], 0);
+        let dest_spk = katamoto_script::TxOut::op_return(b"KATAMOTO_STARK_SETTLED", 0).script_pubkey;
+        let tx = spend.build_spending_tx(funding_outpoint, dest_spk, 50_000);
+
+        assert!(tx.has_witness());
+        assert!(tx.validate_consensus_limits().is_ok());
+        let raw_tx_hex = tx.to_hex();
+        assert!(!raw_tx_hex.is_empty());
+        let rpc_req = katamoto_script::TestMempoolAccept::format_rpc_request(&raw_tx_hex);
+        assert!(rpc_req.contains("testmempoolaccept"));
+    }
+
+    #[test]
+    fn test_circle_fri_two_stage_folding_verification() {
+        use katamoto_field::circle::circle_subgroup_generator;
+        use katamoto_field::M31;
+
+        // Domain generator of order 8
+        let gen = circle_subgroup_generator(3);
+        let p = gen;
+        let _p_conj = p.conjugate();
+
+        let f_p = M31::new(112233);
+        let f_conj = M31::new(445566);
+        let alpha = M31::new(778899);
+
+        // 1. Stage 1: y-folding
+        let y_step = CircleFriYStep::new(p, f_p, f_conj, alpha);
+        let (lhs_y, t1_y, t2_y) = y_step.decompose();
+        assert_eq!(lhs_y, t1_y + t2_y);
+
+        // 2. Stage 2: x-folding
+        let f_neg_x = M31::new(998877);
+        let alpha_x = M31::new(332211);
+        let x_step = CircleFriXStep::new(p.x, y_step.next_f, f_neg_x, alpha_x);
+        let (lhs_x, t1_x, t2_x) = x_step.decompose();
+        assert_eq!(lhs_x, t1_x + t2_x);
+
+        // 3. Merkle commitments for Circle Domain evaluations
+        let mut leaves = Vec::new();
+        for i in 0..8 {
+            let hash = Sha256::digest(format!("circle_eval_{}", i).as_bytes());
+            let mut arr = [0u8; 32];
+            arr.copy_from_slice(&hash);
+            leaves.push(arr);
+        }
+        let tree = MerkleTree::new(leaves);
+        let root = tree.root();
+
+        let proof_p = tree.prove(1);
+        let proof_conj = tree.prove(7);
+
+        let query = CircleFriRoundQuery {
+            y_step,
+            proof_p,
+            proof_conj,
+        };
+
+        let mut builder = ScriptBuilder::new();
+        CircleFriScript::emit_integrated_circle_round_verifier(&mut builder, tree.depth(), &root);
+
+        let witness = CircleFriScript::create_integrated_witness(&query);
+        let mut vm = Vm::with_witness(witness);
+        let ok = vm.execute(builder.as_bytes()).expect("Circle FRI round execution failed");
+        assert!(ok);
+        assert_eq!(vm.stack().last().unwrap(), &[1]);
+
+        println!(
+            "Circle FRI Verifier: Depth={}, Script Size={} B, Opcodes={}, Max Stack={}",
+            tree.depth(),
+            builder.len(),
+            builder.opcode_count(),
+            vm.stats().max_stack_depth
         );
     }
 }
