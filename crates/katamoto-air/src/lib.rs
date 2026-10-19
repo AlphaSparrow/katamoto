@@ -6,8 +6,11 @@ pub mod taptree_compiler;
 pub mod trace;
 
 pub use bisection::{BisectionState, BitVm2DisputeGraph, DisputeResolutionScript};
-pub use constraints::{BoundaryConstraint, FibonacciTransition};
-pub use dsl::{constant, curr, next, AirDslError, AirSystem, Cell, Expr};
+pub use constraints::{BoundaryConstraint, FibonacciTransition, LogUpScript, LogUpStep, LogUpTable};
+pub use dsl::{
+    constant, curr, next, AirDslError, AirSystem, BitwiseOpsGadget, Blake3RoundGadget, Cell,
+    Expr, RangeCheck16Gadget, RangeCheck8Gadget, Sha256RoundGadget,
+};
 pub use quotient::{OodQuotientScript, OodQuotientStep};
 pub use taptree_compiler::{
     CircleStarkTapTreeCompiler, LeafTelemetry, PartitioningTelemetry, StarkTapTreeCompiler,
@@ -375,5 +378,95 @@ mod tests {
         );
         assert!(timeout_tx.validate_consensus_limits().is_ok());
         assert_eq!(timeout_tx.inputs[0].sequence, 144);
+    }
+
+    #[test]
+    fn test_logup_lookup_argument_qm31_transition() {
+        use katamoto_field::QM31;
+
+        // Challenge gamma in QM31
+        let gamma = QM31::from_u32(1000, 2000, 3000, 4000);
+        let prev_accum = QM31::from_u32(10, 20, 30, 40);
+
+        let input_val = M31::new(42);
+        let table_val = M31::new(42);
+        let multiplicity = M31::new(1); // 1 input matches 1 table entry
+
+        let step = LogUpStep::new(prev_accum, input_val, table_val, multiplicity, gamma);
+        let (lhs, rhs) = step.decompose();
+        assert_eq!(lhs, rhs, "LogUp polynomial relation LHS == RHS must hold");
+
+        let mut builder = ScriptBuilder::new();
+        LogUpScript::emit_qm31_verifier(&mut builder);
+
+        let witness = LogUpScript::create_qm31_witness(lhs, rhs);
+        let mut vm = Vm::with_witness(witness);
+        let ok = vm.execute(builder.as_bytes()).expect("LogUp verification should succeed");
+        assert!(ok);
+    }
+
+    #[test]
+    fn test_prebuilt_range_checks_8_and_16() {
+        // 8-bit range check
+        let mut b8 = ScriptBuilder::new();
+        RangeCheck8Gadget::emit_verifier(&mut b8);
+        let wit8 = RangeCheck8Gadget::create_witness(200);
+        let mut vm8 = Vm::with_witness(wit8);
+        assert!(vm8.execute(b8.as_bytes()).unwrap());
+
+        // 16-bit range check with limb decomposition
+        let mut b16 = ScriptBuilder::new();
+        RangeCheck16Gadget::emit_verifier(&mut b16);
+        let val16 = 50000u16; // 50000 = 80 + 256 * 195
+        let wit16 = RangeCheck16Gadget::create_witness(val16);
+        let mut vm16 = Vm::with_witness(wit16);
+        assert!(vm16.execute(b16.as_bytes()).unwrap());
+    }
+
+    #[test]
+    fn test_prebuilt_bitwise_gadgets() {
+        // 8-bit XOR: 0x5a ^ 0x3c == 0x66 (90 ^ 60 == 102)
+        let a = 90u8;
+        let b = 60u8;
+        let xor_res = a ^ b;
+        let mut b_xor = ScriptBuilder::new();
+        BitwiseOpsGadget::emit_xor_verifier(&mut b_xor, a, b, xor_res);
+        let wit_xor = BitwiseOpsGadget::create_witness(a, b, xor_res);
+        let mut vm_xor = Vm::with_witness(wit_xor);
+        assert!(vm_xor.execute(b_xor.as_bytes()).unwrap());
+
+        // 8-bit AND: 90 & 60 == 24
+        let and_res = a & b;
+        let mut b_and = ScriptBuilder::new();
+        BitwiseOpsGadget::emit_and_verifier(&mut b_and, a, b, and_res);
+        let wit_and = BitwiseOpsGadget::create_witness(a, b, and_res);
+        let mut vm_and = Vm::with_witness(wit_and);
+        assert!(vm_and.execute(b_and.as_bytes()).unwrap());
+    }
+
+    #[test]
+    fn test_prebuilt_sha256_and_blake3_round_gadgets() {
+        // SHA-256 round
+        let initial_state = [
+            0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
+            0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19,
+        ];
+        let k0 = 0x428a2f98;
+        let w0 = 0x80000000;
+        let next_state = Sha256RoundGadget::round_step(initial_state, k0, w0);
+
+        let mut b_sha = ScriptBuilder::new();
+        Sha256RoundGadget::emit_verifier(&mut b_sha);
+        let wit_sha = Sha256RoundGadget::create_witness(next_state[0], next_state[4]);
+        let mut vm_sha = Vm::with_witness(wit_sha);
+        assert!(vm_sha.execute(b_sha.as_bytes()).unwrap());
+
+        // Blake3 G function round
+        let (a, b, c, d) = Blake3RoundGadget::g(10, 20, 30, 40, 50, 60);
+        let mut b_blake = ScriptBuilder::new();
+        Blake3RoundGadget::emit_verifier(&mut b_blake);
+        let wit_blake = Blake3RoundGadget::create_witness((a, b, c, d));
+        let mut vm_blake = Vm::with_witness(wit_blake);
+        assert!(vm_blake.execute(b_blake.as_bytes()).unwrap());
     }
 }

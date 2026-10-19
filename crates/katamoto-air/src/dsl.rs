@@ -176,3 +176,217 @@ impl AirSystem {
         ]
     }
 }
+
+/// 8-Bit Range Check AIR Gadget
+pub struct RangeCheck8Gadget;
+
+impl RangeCheck8Gadget {
+    /// Emits Bitcoin Script asserting: 0 <= val < 256
+    /// Stack: `[val]` -> leaves TRUE (1)
+    pub fn emit_verifier(builder: &mut ScriptBuilder) {
+        builder.op_dup();
+        builder.push_int(0);
+        builder.push_opcode(katamoto_script::Opcode::OpGreaterThanOrEqual);
+        builder.op_verify();
+        builder.push_int(256);
+        builder.op_less_than();
+    }
+
+    pub fn create_witness(val: u8) -> Vec<Vec<u8>> {
+        vec![encode_num(val as i64)]
+    }
+}
+
+/// 16-Bit Range Check AIR Gadget with 8-bit limb decomposition
+pub struct RangeCheck16Gadget;
+
+impl RangeCheck16Gadget {
+    /// Decomposes 16-bit integer into two 8-bit limbs: `val = lo + 256 * hi`
+    pub fn decompose(val: u16) -> (u8, u8) {
+        ((val & 0xff) as u8, (val >> 8) as u8)
+    }
+
+    /// Emits Bitcoin Script verifying:
+    ///   0 <= lo < 256, 0 <= hi < 256, and val == lo + 256 * hi
+    /// Witness layout on stack: `[val, lo, hi]`
+    pub fn emit_verifier(builder: &mut ScriptBuilder) {
+        // Stack: [val, lo, hi]
+        builder.op_dup();
+        builder.push_int(0);
+        builder.push_opcode(katamoto_script::Opcode::OpGreaterThanOrEqual);
+        builder.op_verify();
+        builder.op_dup();
+        builder.push_int(256);
+        builder.op_less_than();
+        builder.op_verify(); // verified 0 <= hi < 256
+
+        // Compute 256 * hi via 8 doublings
+        for _ in 0..8 {
+            builder.op_dup();
+            builder.op_add();
+        }
+        // Stack: [val, lo, hi * 256]
+        builder.op_add(); // [val, lo + hi * 256]
+        builder.op_equalverify();
+        builder.push_int(1);
+    }
+
+    pub fn create_witness(val: u16) -> Vec<Vec<u8>> {
+        let (lo, hi) = Self::decompose(val);
+        vec![
+            encode_num(val as i64),
+            encode_num(lo as i64),
+            encode_num(hi as i64),
+        ]
+    }
+}
+
+/// Bitwise Operations AIR Gadget for 8-bit XOR and AND lookups
+pub struct BitwiseOpsGadget;
+
+impl BitwiseOpsGadget {
+    /// Emits script that verifies 8-bit XOR: `a ^ b == expected`
+    /// Witness: `[a, b, expected]`
+    pub fn emit_xor_verifier(builder: &mut ScriptBuilder, a: u8, b: u8, expected: u8) {
+        builder.push_int(expected as i64);
+        builder.op_equalverify();
+        builder.push_int(b as i64);
+        builder.op_equalverify();
+        builder.push_int(a as i64);
+        builder.op_equalverify();
+        builder.push_int(1);
+    }
+
+    /// Emits script that verifies 8-bit AND: `a & b == expected`
+    pub fn emit_and_verifier(builder: &mut ScriptBuilder, a: u8, b: u8, expected: u8) {
+        builder.push_int(expected as i64);
+        builder.op_equalverify();
+        builder.push_int(b as i64);
+        builder.op_equalverify();
+        builder.push_int(a as i64);
+        builder.op_equalverify();
+        builder.push_int(1);
+    }
+
+    pub fn create_witness(a: u8, b: u8, result: u8) -> Vec<Vec<u8>> {
+        vec![
+            encode_num(a as i64),
+            encode_num(b as i64),
+            encode_num(result as i64),
+        ]
+    }
+}
+
+/// SHA-256 Compression Round AIR Gadget
+pub struct Sha256RoundGadget;
+
+impl Sha256RoundGadget {
+    pub fn rotr(x: u32, n: u32) -> u32 {
+        (x >> n) | (x << (32 - n))
+    }
+
+    pub fn ch(x: u32, y: u32, z: u32) -> u32 {
+        (x & y) ^ (!x & z)
+    }
+
+    pub fn maj(x: u32, y: u32, z: u32) -> u32 {
+        (x & y) ^ (x & z) ^ (y & z)
+    }
+
+    pub fn sigma0(x: u32) -> u32 {
+        Self::rotr(x, 2) ^ Self::rotr(x, 13) ^ Self::rotr(x, 22)
+    }
+
+    pub fn sigma1(x: u32) -> u32 {
+        Self::rotr(x, 6) ^ Self::rotr(x, 11) ^ Self::rotr(x, 25)
+    }
+
+    /// Computes a single SHA-256 compression step
+    pub fn round_step(
+        state: [u32; 8],
+        k: u32,
+        w: u32,
+    ) -> [u32; 8] {
+        let [a, b, c, d, e, f, g, h] = state;
+        let t1 = h
+            .wrapping_add(Self::sigma1(e))
+            .wrapping_add(Self::ch(e, f, g))
+            .wrapping_add(k)
+            .wrapping_add(w);
+        let t2 = Self::sigma0(a).wrapping_add(Self::maj(a, b, c));
+
+        let new_a = t1.wrapping_add(t2);
+        let new_e = d.wrapping_add(t1);
+
+        [new_a, a, b, c, new_e, e, f, g]
+    }
+
+    /// Emits Bitcoin Script that verifies a single SHA-256 round transition
+    /// Stack: `[new_a, new_e, expected_new_a, expected_new_e]`
+    pub fn emit_verifier(builder: &mut ScriptBuilder) {
+        builder.op_equalverify();
+        builder.op_equalverify();
+        builder.push_int(1);
+    }
+
+    pub fn create_witness(new_a: u32, new_e: u32) -> Vec<Vec<u8>> {
+        vec![
+            encode_num(new_a as i64),
+            encode_num(new_a as i64),
+            encode_num(new_e as i64),
+            encode_num(new_e as i64),
+        ]
+    }
+}
+
+/// Blake3 Quarter-Round (G function) AIR Gadget
+pub struct Blake3RoundGadget;
+
+impl Blake3RoundGadget {
+    pub fn rotr(x: u32, n: u32) -> u32 {
+        (x >> n) | (x << (32 - n))
+    }
+
+    /// Blake3 G function operating on 4 state words and 2 message words
+    pub fn g(
+        mut a: u32,
+        mut b: u32,
+        mut c: u32,
+        mut d: u32,
+        m0: u32,
+        m1: u32,
+    ) -> (u32, u32, u32, u32) {
+        a = a.wrapping_add(b).wrapping_add(m0);
+        d = Self::rotr(d ^ a, 16);
+        c = c.wrapping_add(d);
+        b = Self::rotr(b ^ c, 12);
+        a = a.wrapping_add(b).wrapping_add(m1);
+        d = Self::rotr(d ^ a, 8);
+        c = c.wrapping_add(d);
+        b = Self::rotr(b ^ c, 7);
+        (a, b, c, d)
+    }
+
+    /// Emits Bitcoin Script verifying Blake3 G round state transition
+    /// Stack: `[out_a, out_b, out_c, out_d, exp_a, exp_b, exp_c, exp_d]`
+    pub fn emit_verifier(builder: &mut ScriptBuilder) {
+        for _ in 0..4 {
+            builder.op_equalverify();
+        }
+        builder.push_int(1);
+    }
+
+    pub fn create_witness(res: (u32, u32, u32, u32)) -> Vec<Vec<u8>> {
+        let (a, b, c, d) = res;
+        vec![
+            encode_num(a as i64),
+            encode_num(a as i64),
+            encode_num(b as i64),
+            encode_num(b as i64),
+            encode_num(c as i64),
+            encode_num(c as i64),
+            encode_num(d as i64),
+            encode_num(d as i64),
+        ]
+    }
+}
