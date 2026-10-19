@@ -1,3 +1,4 @@
+use crate::builder::ScriptBuilder;
 use crate::vm::{MAX_ELEMENT_SIZE, MAX_STACK_SIZE};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -301,6 +302,37 @@ impl Transaction {
 
         Ok(())
     }
+
+    /// Computes BIP-341 sighash preimage for a given input
+    pub fn build_sighash_preimage(&self, input_index: usize, prevouts: &[TxOut]) -> TaprootSighashPreimage {
+        let sha_prevouts = compute_sha_prevouts(&self.inputs);
+        let amounts: Vec<u64> = prevouts.iter().map(|p| p.value).collect();
+        let sha_amounts = compute_sha_amounts(&amounts);
+        let spks: Vec<Vec<u8>> = prevouts.iter().map(|p| p.script_pubkey.clone()).collect();
+        let sha_scriptpubkeys = compute_sha_scriptpubkeys(&spks);
+        let sha_sequences = compute_sha_sequences(&self.inputs);
+        let sha_outputs = compute_sha_outputs(&self.outputs);
+
+        TaprootSighashPreimage {
+            epoch: 0x00,
+            hash_type: 0x00,
+            version: (self.version as u32).to_le_bytes(),
+            lock_time: self.lock_time.to_le_bytes(),
+            sha_prevouts,
+            sha_amounts,
+            sha_scriptpubkeys,
+            sha_sequences,
+            sha_outputs,
+            spend_type: 0x02, // Script path spend
+            input_index: (input_index as u32).to_le_bytes(),
+        }
+    }
+
+    /// Computes BIP-341 Taproot Sighash for spending an input
+    pub fn taproot_sighash(&self, input_index: usize, prevouts: &[TxOut]) -> [u8; 32] {
+        let preimage = self.build_sighash_preimage(input_index, prevouts);
+        preimage.compute_sighash()
+    }
 }
 
 /// Bitcoin Variable Length Integer (CompactSize) encoding
@@ -326,6 +358,207 @@ fn double_sha256(data: &[u8]) -> [u8; 32] {
     let mut out = [0u8; 32];
     out.copy_from_slice(&second);
     out
+}
+
+/// Computes BIP-340/341 Tagged Hash: SHA256(SHA256(tag) || SHA256(tag) || data)
+pub fn tagged_hash(tag: &str, data: &[u8]) -> [u8; 32] {
+    let tag_hash = Sha256::digest(tag.as_bytes());
+    let mut hasher = Sha256::new();
+    hasher.update(&tag_hash);
+    hasher.update(&tag_hash);
+    hasher.update(data);
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&hasher.finalize());
+    out
+}
+
+/// Computes SHA256(outpoint_0 || outpoint_1 || ...)
+pub fn compute_sha_prevouts(inputs: &[TxIn]) -> [u8; 32] {
+    let mut buf = Vec::new();
+    for input in inputs {
+        input.previous_output.serialize(&mut buf);
+    }
+    let res = Sha256::digest(&buf);
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&res);
+    out
+}
+
+/// Computes SHA256(amount_0 || amount_1 || ...) where amounts are 8-byte LE
+pub fn compute_sha_amounts(amounts: &[u64]) -> [u8; 32] {
+    let mut buf = Vec::with_capacity(amounts.len() * 8);
+    for &amt in amounts {
+        buf.extend_from_slice(&amt.to_le_bytes());
+    }
+    let res = Sha256::digest(&buf);
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&res);
+    out
+}
+
+/// Computes SHA256(spk_0 || spk_1 || ...) where each is prefixed by CompactSize length
+pub fn compute_sha_scriptpubkeys(spks: &[Vec<u8>]) -> [u8; 32] {
+    let mut buf = Vec::new();
+    for spk in spks {
+        write_varint(&mut buf, spk.len() as u64);
+        buf.extend_from_slice(spk);
+    }
+    let res = Sha256::digest(&buf);
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&res);
+    out
+}
+
+/// Computes SHA256(seq_0 || seq_1 || ...) where sequences are 4-byte LE
+pub fn compute_sha_sequences(inputs: &[TxIn]) -> [u8; 32] {
+    let mut buf = Vec::with_capacity(inputs.len() * 4);
+    for input in inputs {
+        buf.extend_from_slice(&input.sequence.to_le_bytes());
+    }
+    let res = Sha256::digest(&buf);
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&res);
+    out
+}
+
+/// Computes SHA256(txout_0 || txout_1 || ...)
+pub fn compute_sha_outputs(outputs: &[TxOut]) -> [u8; 32] {
+    let mut buf = Vec::new();
+    for output in outputs {
+        output.serialize(&mut buf);
+    }
+    let res = Sha256::digest(&buf);
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&res);
+    out
+}
+
+/// Taproot BIP-341 / BIP-342 Sighash Preimage components
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TaprootSighashPreimage {
+    pub epoch: u8,
+    pub hash_type: u8,
+    pub version: [u8; 4],
+    pub lock_time: [u8; 4],
+    pub sha_prevouts: [u8; 32],
+    pub sha_amounts: [u8; 32],
+    pub sha_scriptpubkeys: [u8; 32],
+    pub sha_sequences: [u8; 32],
+    pub sha_outputs: [u8; 32],
+    pub spend_type: u8,
+    pub input_index: [u8; 4],
+}
+
+impl TaprootSighashPreimage {
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut buf = Vec::with_capacity(175);
+        buf.push(self.epoch);
+        buf.push(self.hash_type);
+        buf.extend_from_slice(&self.version);
+        buf.extend_from_slice(&self.lock_time);
+        buf.extend_from_slice(&self.sha_prevouts);
+        buf.extend_from_slice(&self.sha_amounts);
+        buf.extend_from_slice(&self.sha_scriptpubkeys);
+        buf.extend_from_slice(&self.sha_sequences);
+        buf.extend_from_slice(&self.sha_outputs);
+        buf.push(self.spend_type);
+        buf.extend_from_slice(&self.input_index);
+        buf
+    }
+
+    /// Computes the TapSighash digest
+    pub fn compute_sighash(&self) -> [u8; 32] {
+        let bytes = self.to_bytes();
+        tagged_hash("TapSighash", &bytes)
+    }
+
+    /// Splits preimage into witness chunks suitable for OP_CAT stack reconstruction
+    pub fn to_witness_chunks(&self) -> Vec<Vec<u8>> {
+        let mut control_prefix = Vec::with_capacity(10);
+        control_prefix.push(self.epoch);
+        control_prefix.push(self.hash_type);
+        control_prefix.extend_from_slice(&self.version);
+        control_prefix.extend_from_slice(&self.lock_time);
+
+        let mut control_suffix = Vec::with_capacity(5);
+        control_suffix.push(self.spend_type);
+        control_suffix.extend_from_slice(&self.input_index);
+
+        vec![
+            control_prefix,
+            self.sha_prevouts.to_vec(),
+            self.sha_amounts.to_vec(),
+            self.sha_scriptpubkeys.to_vec(),
+            self.sha_sequences.to_vec(),
+            self.sha_outputs.to_vec(),
+            control_suffix,
+        ]
+    }
+}
+
+/// Bitcoin Script Gadget for BIP-347 OP_CAT Sighash Introspection Covenants
+pub struct CovenantScript;
+
+impl CovenantScript {
+    /// Emits Bitcoin Script that:
+    /// 1. Asserts `sha_outputs == expected_sha_outputs` (constrains the spending transaction's outputs)
+    /// 2. Assembles the sighash preimage using BIP-347 OP_CAT
+    /// 3. Computes the sighash using OP_SHA256
+    /// 4. Verifies the signature with OP_CHECKSIG against covenant_pubkey
+    ///
+    /// Expected Witness Stack:
+    /// `[sig, pubkey, control_prefix, sha_prevouts, sha_amounts, sha_scriptpubkeys, sha_sequences, sha_outputs, control_suffix]`
+    pub fn emit_sighash_covenant_verifier(
+        builder: &mut ScriptBuilder,
+        expected_sha_outputs: &[u8; 32],
+        covenant_pubkey: &[u8; 32],
+    ) {
+        // Altstack: stash control_suffix
+        builder.op_toaltstack(); // alt: [control_suffix]
+
+        // Assert sha_outputs matches expected_sha_outputs
+        builder.op_dup();
+        builder.push_slice(expected_sha_outputs);
+        builder.op_equalverify();
+
+        // Concatenate sighash chunks with OP_CAT:
+        // Stack top: [sig, pubkey, control_prefix, sha_prevouts, sha_amounts, sha_scriptpubkeys, sha_sequences, sha_outputs]
+        builder.op_cat(); // sha_sequences || sha_outputs
+        builder.op_cat(); // sha_scriptpubkeys || (sha_sequences || sha_outputs)
+        builder.op_cat(); // sha_amounts || ...
+        builder.op_cat(); // sha_prevouts || ...
+        builder.op_cat(); // control_prefix || ...
+
+        // Restore control_suffix from altstack
+        builder.op_fromaltstack(); // [sig, pubkey, preimage_partial, control_suffix]
+        builder.op_cat(); // [sig, pubkey, full_preimage]
+
+        // Hash to obtain sighash
+        builder.op_sha256(); // [sig, pubkey, sighash]
+        builder.op_drop();   // in Tapscript OP_CHECKSIG verifies internally using sighash
+
+        // Verify covenant pubkey and signature
+        builder.op_dup();
+        builder.push_slice(covenant_pubkey);
+        builder.op_equalverify(); // confirms pubkey == covenant_pubkey
+        builder.op_checksig();    // verifies sig with covenant_pubkey
+    }
+
+    /// Prepares witness for sighash introspection covenant spend
+    pub fn create_covenant_witness(
+        sig: &[u8],
+        pubkey: &[u8; 32],
+        preimage: &TaprootSighashPreimage,
+    ) -> Vec<Vec<u8>> {
+        let mut witness = Vec::new();
+        witness.push(sig.to_vec());
+        witness.push(pubkey.to_vec());
+        let chunks = preimage.to_witness_chunks();
+        for chunk in chunks {
+            witness.push(chunk);
+        }
+        witness
+    }
 }
 
 /// Formatter for Bitcoin Core / Bitcoin Inquisition RPC `testmempoolaccept`

@@ -5,7 +5,7 @@ pub mod quotient;
 pub mod taptree_compiler;
 pub mod trace;
 
-pub use bisection::{BisectionState, DisputeResolutionScript};
+pub use bisection::{BisectionState, BitVm2DisputeGraph, DisputeResolutionScript};
 pub use constraints::{BoundaryConstraint, FibonacciTransition};
 pub use dsl::{constant, curr, next, AirDslError, AirSystem, Cell, Expr};
 pub use quotient::{OodQuotientScript, OodQuotientStep};
@@ -313,5 +313,67 @@ mod tests {
             let profile = vm.profile();
             assert!(profile.stats.max_combined_stack_depth < 100);
         }
+    }
+
+    #[test]
+    fn test_bitvm2_end_to_end_dispute_graph() {
+        let operator_key = [0x11u8; 32];
+        let challenger_key = [0x22u8; 32];
+        let bond = 100_000_000u64; // 1 BTC
+        let state_commitment = [0x55u8; 32];
+
+        let dispute_graph = BitVm2DisputeGraph::new(
+            operator_key,
+            challenger_key,
+            bond,
+            144, // 1 day dispute window
+            state_commitment,
+        );
+
+        // 1. Operator deposits bond via AssertTx
+        let funding_outpoint = OutPoint::new([0xaa; 32], 0);
+        let (assert_tx, assert_tree) = dispute_graph.build_assert_tx(funding_outpoint);
+        assert!(assert_tx.validate_consensus_limits().is_ok());
+        let assert_txid = assert_tx.txid();
+        assert_eq!(assert_txid.len(), 64);
+
+        // 2. Challenger challenges contested step 5 via ChallengeTx
+        let assert_outpoint = OutPoint::new([0xbb; 32], 0);
+        let mock_challenger_sig = [0x77u8; 64];
+        let (challenge_tx, _spend) = dispute_graph.build_challenge_tx(
+            &assert_tree,
+            assert_outpoint.clone(),
+            5,
+            mock_challenger_sig,
+        );
+        assert!(challenge_tx.validate_consensus_limits().is_ok());
+
+        // 3. Challenger executes DisproveTx using compiled fraud leaf spend
+        let fraud_step_prev = M31::new(1);
+        let fraud_step_curr = M31::new(2);
+        let fraud_claim = M31::new(999); // Invalid (1 + 2 = 3)
+        let (_dispute_tree, fraud_spend) = DisputeResolutionScript::compile_dispute_taptree(
+            fraud_claim,
+            fraud_step_curr,
+            fraud_step_prev,
+        );
+        let challenge_outpoint = OutPoint::new([0xcc; 32], 0);
+        let disprove_tx = dispute_graph.build_disprove_tx(
+            challenge_outpoint,
+            &fraud_spend,
+            &challenger_key,
+        );
+        assert!(disprove_tx.validate_consensus_limits().is_ok());
+
+        // 4. Operator timeout reclaim if no challenge occurs
+        let mock_operator_sig = [0x88u8; 64];
+        let timeout_tx = dispute_graph.build_timeout_resolve_tx(
+            &assert_tree,
+            assert_outpoint,
+            mock_operator_sig,
+            &operator_key,
+        );
+        assert!(timeout_tx.validate_consensus_limits().is_ok());
+        assert_eq!(timeout_tx.inputs[0].sequence, 144);
     }
 }
