@@ -226,6 +226,26 @@ cargo run -p katamoto-cli -- verify-stark 16 1 1
 cargo run -p katamoto-cli -- verify-circle
 ```
 
+### 8. BitVM2 Dispute Graph with OP_CAT Covenants & WOTS
+```bash
+cargo run -p katamoto-cli -- dispute-graph
+```
+
+### 9. Verify LogUp Lookup Argument & Precompiled Arithmetic Gadgets
+```bash
+cargo run -p katamoto-cli -- verify-logup
+```
+
+### 10. Bridge Stwo Circle STARK & RISC-V Trace to Bitcoin TapTree
+```bash
+cargo run -p katamoto-cli -- verify-stwo
+```
+
+### 11. Profile Tapscript Stack Watermarks & Optimize Bytecode
+```bash
+cargo run -p katamoto-cli -- optimize-script
+```
+
 ---
 
 ## Bitcoin Inquisition & Regtest Testing
@@ -273,14 +293,11 @@ curl --user rpcuser:rpcpass \
   - [x] Fluent AIR DSL with symbolic column expressions (`curr`, `next`, `constant`)
   - [x] Multi-column row commitment Merkle tree with `OP_CAT` verification
   - [x] Fiat-Shamir transcript evolution with domain separation
-- [x] **Phase 3: TapTree Script Compiler (`katamoto-air` & `katamoto-script`)**
-  - [x] Recursive leaf-partitioning pass across 4 leaf types: MerkleAuth, CircleFolding, Constraints, Transcript
-  - [x] Consensus and standardness telemetry enforcing script size $\le 520$ B and stack $\le 1000$
-  - [x] Taproot v1 spend package and transaction builder
-- [x] **Phase 4: BitVM2 / Optimistic Settlement & CLI Pipeline (`katamoto-cli`)**
-  - [x] Optimistic bisection game state machine for disputed transitions
-  - [x] On-chain fraud proof script execution (`OP_NUMNOTEQUAL`) and bond slashing
-  - [x] CLI commands: `prove`, `compile-taptree`, `broadcast-challenge`, `partitioning-telemetry`
+- [x] **Phase 3: Stateful On-Chain Protocols, LogUp & zkVM Bridge**
+  - [x] **`OP_CAT` Covenants & BitVM2 Dispute Graph** (`katamoto-script` & `katamoto-air`): BIP-341 sighash introspection covenants, Winternitz & Lamport OTS, connected `AssertTx` -> `ChallengeTx` -> `DisproveTx` / `TimeoutTx` state graph.
+  - [x] **LogUp Lookups & Precompiles** (`katamoto-air` & `katamoto-field`): Quadratic polynomial equality over $QM_{31}$ without division, prebuilt gadgets for 8/16-bit range checks, bitwise XOR/AND, and SHA-256 / Blake3 compression rounds.
+  - [x] **External Prover Bridge (Stwo / RISC-V)** (`katamoto-stwo` & `katamoto-fri`): Native Stwo Circle STARK proof parser, Fiat-Shamir channel adapter, mixed-degree multi-column Merkle tree, Proof-of-Work grinding verifier, and RISC-V zkVM CPU transition verifier.
+  - [x] **Tapscript IR Optimizer & Profiler** (`katamoto-script` & `katamoto-air`): Intermediate Representation (IR), multi-pass peephole optimizer, altstack allocator, BIP-342 1000-element stack watermark profiler, and sub-leaf quotient splitting.
 
 ---
 

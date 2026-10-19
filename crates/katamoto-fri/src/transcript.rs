@@ -61,6 +61,44 @@ impl Transcript {
 
         (challenge, prefix, suffix)
     }
+
+    /// Checks whether SHA256(state || nonce.to_le_bytes()) satisfies the Proof of Work difficulty.
+    /// `pow_bits` specifies the required number of leading zero bits.
+    pub fn verify_pow(state: &[u8; 32], nonce: u64, pow_bits: u32) -> bool {
+        if pow_bits == 0 {
+            return true;
+        }
+        let mut hasher = Sha256::new();
+        hasher.update(state);
+        hasher.update(&nonce.to_le_bytes());
+        let hash = hasher.finalize();
+
+        let full_zero_bytes = (pow_bits / 8) as usize;
+        let rem_bits = (pow_bits % 8) as usize;
+
+        for &b in &hash[..full_zero_bytes] {
+            if b != 0 {
+                return false;
+            }
+        }
+        if rem_bits > 0 {
+            let next_byte = hash[full_zero_bytes];
+            let shift = 8 - rem_bits;
+            if (next_byte >> shift) != 0 {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// Grinds a 64-bit nonce such that SHA256(state || nonce.to_le_bytes()) satisfies `pow_bits` leading zeros.
+    pub fn grind_pow(&self, pow_bits: u32) -> u64 {
+        let mut nonce = 0u64;
+        while !Self::verify_pow(&self.state, nonce, pow_bits) {
+            nonce += 1;
+        }
+        nonce
+    }
 }
 
 /// Bitcoin Script Gadgets for verifying Fiat-Shamir transcript evolution
@@ -100,5 +138,78 @@ impl TranscriptScript {
             suffix.to_vec(),
             prefix.to_vec(),
         ]
+    }
+
+    /// Emits script that verifies Proof of Work grinding against expected transcript state:
+    /// Computes SHA256(state || nonce), and checks that it matches reconstructed hash
+    /// which begins with `pow_bits` leading zero bits.
+    pub fn emit_verify_pow_grinding(
+        builder: &mut ScriptBuilder,
+        expected_state: &[u8; 32],
+        pow_bits: u32,
+    ) {
+        let full_zero_bytes = (pow_bits / 8) as usize;
+        let rem_bits = (pow_bits % 8) as usize;
+
+        // Stack upon entry:
+        // If rem_bits == 0: [hash_suffix, nonce_8B]
+        // If rem_bits > 0:  [hash_suffix, partial_byte_1B, nonce_8B]
+
+        // 1. Hash state || nonce
+        builder.push_slice(expected_state);
+        builder.op_swap();
+        builder.op_cat();
+        builder.op_sha256();
+        builder.op_toaltstack();
+
+        // 2. Reconstruct hash with leading zero bits
+        if rem_bits > 0 {
+            let limit = 1i64 << (8 - rem_bits);
+            builder.op_dup();
+            builder.push_int(limit);
+            builder.op_less_than();
+            builder.op_verify();
+
+            builder.op_swap();
+            builder.op_cat();
+        }
+
+        if full_zero_bytes > 0 {
+            let zero_prefix = vec![0u8; full_zero_bytes];
+            builder.push_slice(&zero_prefix);
+            builder.op_swap();
+            builder.op_cat();
+        }
+
+        // 3. Verify reconstructed == computed_hash
+        builder.op_fromaltstack();
+        builder.op_equalverify();
+        builder.push_int(1);
+    }
+
+    /// Creates witness stack for Proof of Work verification
+    pub fn create_pow_witness(state: &[u8; 32], nonce: u64, pow_bits: u32) -> Vec<Vec<u8>> {
+        let mut hasher = Sha256::new();
+        hasher.update(state);
+        hasher.update(&nonce.to_le_bytes());
+        let hash = hasher.finalize();
+
+        let full_zero_bytes = (pow_bits / 8) as usize;
+        let rem_bits = (pow_bits % 8) as usize;
+
+        let mut witness = Vec::new();
+
+        if rem_bits == 0 {
+            let suffix = hash[full_zero_bytes..].to_vec();
+            witness.push(suffix);
+        } else {
+            let partial = hash[full_zero_bytes];
+            let suffix = hash[full_zero_bytes + 1..].to_vec();
+            witness.push(suffix);
+            witness.push(vec![partial]);
+        }
+
+        witness.push(nonce.to_le_bytes().to_vec());
+        witness
     }
 }

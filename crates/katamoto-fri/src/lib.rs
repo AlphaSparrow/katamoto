@@ -5,7 +5,9 @@ pub mod merkle;
 pub mod taproot;
 pub mod transcript;
 
-pub use batch_merkle::{BatchMerkleScript, BatchMerkleTree};
+pub use batch_merkle::{
+    BatchMerkleScript, BatchMerkleTree, MixedBatchMerkleScript, MixedBatchMerkleTree, MixedColumn,
+};
 pub use circle_folding::{
     CircleFriRoundQuery, CircleFriScript, CircleFriXStep, CircleFriYStep,
 };
@@ -345,4 +347,75 @@ mod tests {
         assert!(ok);
         assert_eq!(vm.stack().last().unwrap(), &[1]);
     }
+
+    #[test]
+    fn test_pow_grinding_verification() {
+        let transcript = Transcript::new();
+        let state = transcript.state();
+
+        // 1. Byte-aligned difficulty (8 bits = 1 leading 0x00 byte)
+        let pow_bits_8 = 8;
+        let nonce_8 = transcript.grind_pow(pow_bits_8);
+        assert!(Transcript::verify_pow(&state, nonce_8, pow_bits_8));
+
+        let mut builder_8 = ScriptBuilder::new();
+        TranscriptScript::emit_verify_pow_grinding(&mut builder_8, &state, pow_bits_8);
+        let witness_8 = TranscriptScript::create_pow_witness(&state, nonce_8, pow_bits_8);
+
+        let mut vm_8 = Vm::with_witness(witness_8);
+        let ok_8 = vm_8.execute(builder_8.as_bytes()).expect("PoW 8-bit verification failed");
+        assert!(ok_8);
+
+        // 2. Sub-byte difficulty (12 bits = 1 byte zero + high nibble zero)
+        let pow_bits_12 = 12;
+        let nonce_12 = transcript.grind_pow(pow_bits_12);
+        assert!(Transcript::verify_pow(&state, nonce_12, pow_bits_12));
+
+        let mut builder_12 = ScriptBuilder::new();
+        TranscriptScript::emit_verify_pow_grinding(&mut builder_12, &state, pow_bits_12);
+        let witness_12 = TranscriptScript::create_pow_witness(&state, nonce_12, pow_bits_12);
+
+        let mut vm_12 = Vm::with_witness(witness_12);
+        let ok_12 = vm_12.execute(builder_12.as_bytes()).expect("PoW 12-bit verification failed");
+        assert!(ok_12);
+    }
+
+    #[test]
+    fn test_mixed_batch_merkle_tree_multi_column_verification() {
+        use katamoto_field::M31;
+
+        // 3 columns of different lengths:
+        // Col 0: log_size 4 (16 elements)
+        // Col 1: log_size 3 (8 elements)
+        // Col 2: log_size 2 (4 elements)
+        let col0 = MixedColumn::new((0..16).map(|i| M31::new(i * 10)).collect());
+        let col1 = MixedColumn::new((0..8).map(|i| M31::new(i * 20 + 1)).collect());
+        let col2 = MixedColumn::new((0..4).map(|i| M31::new(i * 30 + 2)).collect());
+
+        let mixed_tree = MixedBatchMerkleTree::new(vec![col0, col1, col2]);
+        assert_eq!(mixed_tree.depth(), 4);
+        assert_eq!(mixed_tree.max_log_size, 4);
+        let root = mixed_tree.root();
+
+        // Prove row index 11 (binary 1011):
+        // Col 0 at: 11 >> (4 - 4) = 11 -> 110
+        // Col 1 at: 11 >> (4 - 3) = 5  -> 101
+        // Col 2 at: 11 >> (4 - 2) = 2  -> 62
+        let (row_vals, proof) = mixed_tree.prove_row(11);
+        assert_eq!(row_vals.len(), 3);
+        assert_eq!(row_vals[0].value(), 110);
+        assert_eq!(row_vals[1].value(), 101);
+        assert_eq!(row_vals[2].value(), 62);
+
+        let mut builder = ScriptBuilder::new();
+        MixedBatchMerkleScript::emit_row_verifier(&mut builder, 3, mixed_tree.depth(), &root);
+
+        let witness = MixedBatchMerkleScript::create_row_witness(&row_vals, &proof);
+        let mut vm = Vm::with_witness(witness);
+        let ok = vm.execute(builder.as_bytes()).expect("Mixed Batch Merkle verification failed");
+        assert!(ok);
+        assert_eq!(vm.stack().last().unwrap(), &[1]);
+    }
 }
+
+

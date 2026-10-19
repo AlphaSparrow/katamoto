@@ -11,5 +11,6 @@ katamoto-script = { path = "../katamoto-script" }
 katamoto-field = { path = "../katamoto-field" }
 katamoto-fri = { path = "../katamoto-fri" }
 katamoto-air = { path = "../katamoto-air" }
+katamoto-stwo = { path = "../katamoto-stwo" }
 hex.workspace = true
 sha2.workspace = true
