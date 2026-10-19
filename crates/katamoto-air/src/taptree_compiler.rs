@@ -6,7 +6,10 @@ use katamoto_fri::{
     FriQueryStep, FriRoundQuery, FriScript, MerkleTree, TapLeaf, TapTree, TaprootStarkSpend,
     Transcript, TranscriptScript,
 };
-use katamoto_script::{OutPoint, ScriptBuilder, Transaction, TxOut};
+use katamoto_script::{OutPoint, ScriptBuilder, ScriptProfile, Transaction, TxOut, Vm, VmError};
+
+/// Maximum allowable stack watermark before automated sub-leaf partitioning is triggered (consensus limit is 1,000)
+pub const STACK_DEPTH_SPLIT_THRESHOLD: usize = 900;
 
 /// End-to-End Bitcoin STARK Verifier TapTree Compiler
 /// Compiles the complete proof verification pipeline into partitioned BIP-341 Taproot leaves.
@@ -155,6 +158,40 @@ impl StarkTapTreeCompiler {
     ) -> Transaction {
         let dest_spk = TxOut::p2tr(p2tr_output_key, satoshis).script_pubkey;
         spend.build_spending_tx(funding_outpoint, dest_spk, satoshis)
+    }
+
+    /// Evaluates and profiles a specific spend inside the Bitcoin Script VM to record execution stats,
+    /// watermark stack depth, maximum element size, and consensus limit compliance.
+    pub fn profile_spend(spend: &TaprootStarkSpend) -> Result<ScriptProfile, VmError> {
+        let mut vm = Vm::with_witness(spend.witness_items.clone());
+        let _ = vm.execute(&spend.leaf_script)?;
+        Ok(vm.profile())
+    }
+
+    /// Automatically partitions an OOD quotient step into sub-leaves whenever stack depth
+    /// approaches the 900-element limit or when independent verification is desired.
+    pub fn compile_split_ood_leaves(
+        step: &OodQuotientStep,
+    ) -> (Vec<TapLeaf>, Vec<Vec<Vec<u8>>>) {
+        let (lhs, t1, t2) = step.decompose();
+
+        // Sub-leaf 1: Boundary quotient difference
+        let mut b1 = ScriptBuilder::new();
+        OodQuotientScript::emit_split_boundary_verifier(&mut b1);
+        let leaf1 = TapLeaf::new("ood_split_boundary_leaf", b1.to_bytes());
+        let wit1 = vec![
+            katamoto_script::builder::encode_num(step.v0.as_i64()),
+            katamoto_script::builder::encode_num(step.expected_init.as_i64()),
+            katamoto_script::builder::encode_num((step.v0 - step.expected_init).as_i64()),
+        ];
+
+        // Sub-leaf 2: Colinearity linear combination
+        let mut b2 = ScriptBuilder::new();
+        OodQuotientScript::emit_split_combination_verifier(&mut b2);
+        let leaf2 = TapLeaf::new("ood_split_combination_leaf", b2.to_bytes());
+        let wit2 = OodQuotientScript::create_witness(lhs, t1, t2);
+
+        (vec![leaf1, leaf2], vec![wit1, wit2])
     }
 }
 
@@ -371,5 +408,39 @@ impl CircleStarkTapTreeCompiler {
     ) -> Transaction {
         let dest_spk = TxOut::p2tr(p2tr_output_key, satoshis).script_pubkey;
         spend.build_spending_tx(funding_outpoint, dest_spk, satoshis)
+    }
+
+    /// Evaluates and profiles a specific spend inside the Bitcoin Script VM to record execution stats,
+    /// watermark stack depth, maximum element size, and consensus limit compliance.
+    pub fn profile_spend(spend: &TaprootStarkSpend) -> Result<ScriptProfile, VmError> {
+        let mut vm = Vm::with_witness(spend.witness_items.clone());
+        let _ = vm.execute(&spend.leaf_script)?;
+        Ok(vm.profile())
+    }
+
+    /// Automatically partitions an OOD quotient step into sub-leaves whenever stack depth
+    /// approaches the 900-element limit or when independent verification is desired.
+    pub fn compile_split_ood_leaves(
+        step: &OodQuotientStep,
+    ) -> (Vec<TapLeaf>, Vec<Vec<Vec<u8>>>) {
+        let (lhs, t1, t2) = step.decompose();
+
+        // Sub-leaf 1: Boundary quotient difference
+        let mut b1 = ScriptBuilder::new();
+        OodQuotientScript::emit_split_boundary_verifier(&mut b1);
+        let leaf1 = TapLeaf::new("ood_split_boundary_leaf", b1.to_bytes());
+        let wit1 = vec![
+            katamoto_script::builder::encode_num(step.v0.as_i64()),
+            katamoto_script::builder::encode_num(step.expected_init.as_i64()),
+            katamoto_script::builder::encode_num((step.v0 - step.expected_init).as_i64()),
+        ];
+
+        // Sub-leaf 2: Colinearity linear combination
+        let mut b2 = ScriptBuilder::new();
+        OodQuotientScript::emit_split_combination_verifier(&mut b2);
+        let leaf2 = TapLeaf::new("ood_split_combination_leaf", b2.to_bytes());
+        let wit2 = OodQuotientScript::create_witness(lhs, t1, t2);
+
+        (vec![leaf1, leaf2], vec![wit1, wit2])
     }
 }

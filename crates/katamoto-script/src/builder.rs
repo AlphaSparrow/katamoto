@@ -174,9 +174,220 @@ impl ScriptBuilder {
     pub fn op_else(&mut self) -> &mut Self { self.push_opcode(Opcode::OpElse) }
     pub fn op_endif(&mut self) -> &mut Self { self.push_opcode(Opcode::OpEndIf) }
 
+    pub fn op_checksig(&mut self) -> &mut Self { self.push_opcode(Opcode::OpCheckSig) }
+    pub fn op_checksigverify(&mut self) -> &mut Self { self.push_opcode(Opcode::OpCheckSigVerify) }
+
     pub fn extend(&mut self, other: &ScriptBuilder) -> &mut Self {
         self.bytes.extend_from_slice(&other.bytes);
         self.opcode_count += other.opcode_count;
         self
     }
+
+    /// Converts the compiled script bytecode into an Intermediate Representation (IR)
+    pub fn to_ir(&self) -> Result<Vec<ScriptOp>, String> {
+        let mut ops = Vec::new();
+        let mut pc = 0;
+        let len = self.bytes.len();
+
+        while pc < len {
+            let byte = self.bytes[pc];
+            pc += 1;
+
+            if byte <= 0x4e {
+                let data_len = if byte == 0 {
+                    0
+                } else if byte <= 0x4b {
+                    byte as usize
+                } else if byte == 0x4c {
+                    if pc >= len { return Err("Unexpected EOF in pushdata1".into()); }
+                    let l = self.bytes[pc] as usize;
+                    pc += 1;
+                    l
+                } else if byte == 0x4d {
+                    if pc + 2 > len { return Err("Unexpected EOF in pushdata2".into()); }
+                    let l = u16::from_le_bytes([self.bytes[pc], self.bytes[pc + 1]]) as usize;
+                    pc += 2;
+                    l
+                } else {
+                    if pc + 4 > len { return Err("Unexpected EOF in pushdata4".into()); }
+                    let l = u32::from_le_bytes([
+                        self.bytes[pc], self.bytes[pc + 1], self.bytes[pc + 2], self.bytes[pc + 3]
+                    ]) as usize;
+                    pc += 4;
+                    l
+                };
+
+                if pc + data_len > len {
+                    return Err("Unexpected EOF in push data payload".into());
+                }
+                let data = self.bytes[pc..pc + data_len].to_vec();
+                pc += data_len;
+                ops.push(ScriptOp::Push(data));
+                continue;
+            }
+
+            if byte == 0x4f {
+                ops.push(ScriptOp::Op(Opcode::Op1Negate));
+                continue;
+            }
+
+            if (0x51..=0x60).contains(&byte) {
+                let op = Opcode::from_u8(byte).ok_or_else(|| format!("Invalid small int opcode 0x{:02x}", byte))?;
+                ops.push(ScriptOp::Op(op));
+                continue;
+            }
+
+            let op = Opcode::from_u8(byte).ok_or_else(|| format!("Invalid opcode 0x{:02x}", byte))?;
+            ops.push(ScriptOp::Op(op));
+        }
+
+        Ok(ops)
+    }
+
+    /// Rebuilds a ScriptBuilder from an Intermediate Representation (IR) sequence
+    pub fn from_ir(ops: &[ScriptOp]) -> Self {
+        let mut builder = ScriptBuilder::new();
+        for op in ops {
+            match op {
+                ScriptOp::Op(code) => {
+                    builder.push_opcode(*code);
+                }
+                ScriptOp::Push(data) => {
+                    builder.push_slice(data);
+                }
+            }
+        }
+        builder
+    }
+
+    /// Optimizes the script using peephole optimization passes
+    pub fn optimize(&self) -> (Self, OptimizationReport) {
+        ScriptOptimizer::optimize(self)
+    }
+}
+
+/// Intermediate Representation (IR) operation
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ScriptOp {
+    Op(Opcode),
+    Push(Vec<u8>),
+}
+
+/// Statistics detailing the optimization passes applied
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct OptimizationReport {
+    pub original_ops: usize,
+    pub optimized_ops: usize,
+    pub original_bytes: usize,
+    pub optimized_bytes: usize,
+    pub altstack_pairs_removed: usize,
+    pub redundant_swaps_removed: usize,
+    pub dup_drops_removed: usize,
+    pub nops_removed: usize,
+    pub arithmetic_cancels_removed: usize,
+}
+
+/// Multi-pass Peephole Optimizer for Bitcoin Tapscript
+pub struct ScriptOptimizer;
+
+impl ScriptOptimizer {
+    pub fn optimize(builder: &ScriptBuilder) -> (ScriptBuilder, OptimizationReport) {
+        let mut report = OptimizationReport {
+            original_ops: builder.opcode_count(),
+            original_bytes: builder.len(),
+            ..Default::default()
+        };
+
+        let mut ir = match builder.to_ir() {
+            Ok(ops) => ops,
+            Err(_) => return (builder.clone(), report),
+        };
+
+        let mut changed = true;
+        while changed {
+            changed = false;
+            let mut next_ir = Vec::with_capacity(ir.len());
+            let mut i = 0;
+            while i < ir.len() {
+                if i + 1 < ir.len() {
+                    match (&ir[i], &ir[i + 1]) {
+                        // OP_TOALTSTACK followed immediately by OP_FROMALTSTACK
+                        (ScriptOp::Op(Opcode::OpToAltStack), ScriptOp::Op(Opcode::OpFromAltStack)) => {
+                            report.altstack_pairs_removed += 1;
+                            i += 2;
+                            changed = true;
+                            continue;
+                        }
+                        // OP_FROMALTSTACK followed immediately by OP_TOALTSTACK
+                        (ScriptOp::Op(Opcode::OpFromAltStack), ScriptOp::Op(Opcode::OpToAltStack)) => {
+                            report.altstack_pairs_removed += 1;
+                            i += 2;
+                            changed = true;
+                            continue;
+                        }
+                        // Adjacent OP_SWAP cancellation
+                        (ScriptOp::Op(Opcode::OpSwap), ScriptOp::Op(Opcode::OpSwap)) => {
+                            report.redundant_swaps_removed += 1;
+                            i += 2;
+                            changed = true;
+                            continue;
+                        }
+                        // OP_DUP followed immediately by OP_DROP
+                        (ScriptOp::Op(Opcode::OpDup), ScriptOp::Op(Opcode::OpDrop)) => {
+                            report.dup_drops_removed += 1;
+                            i += 2;
+                            changed = true;
+                            continue;
+                        }
+                        // OP_1ADD followed by OP_1SUB or vice versa
+                        (ScriptOp::Op(Opcode::Op1Add), ScriptOp::Op(Opcode::Op1Sub))
+                        | (ScriptOp::Op(Opcode::Op1Sub), ScriptOp::Op(Opcode::Op1Add)) => {
+                            report.arithmetic_cancels_removed += 1;
+                            i += 2;
+                            changed = true;
+                            continue;
+                        }
+                        _ => {}
+                    }
+                }
+
+                // Elimination of standalone OP_NOP
+                if let ScriptOp::Op(Opcode::OpNop) = &ir[i] {
+                    report.nops_removed += 1;
+                    i += 1;
+                    changed = true;
+                    continue;
+                }
+
+                next_ir.push(ir[i].clone());
+                i += 1;
+            }
+            ir = next_ir;
+        }
+
+        let opt_builder = ScriptBuilder::from_ir(&ir);
+        report.optimized_ops = opt_builder.opcode_count();
+        report.optimized_bytes = opt_builder.len();
+        (opt_builder, report)
+    }
+}
+
+/// Hint Packing: packs multiple 32-bit values into a single byte vector
+pub fn pack_m31_hints(elements: &[u32]) -> Vec<u8> {
+    let mut packed = Vec::with_capacity(elements.len() * 4);
+    for &elem in elements {
+        packed.extend_from_slice(&elem.to_le_bytes());
+    }
+    packed
+}
+
+/// Emits script that verifies a packed hint matches split parts using BIP-347 OP_CAT
+/// Stack layout before: `[packed_expected, part_0, part_1, ..., part_{count-1}]`
+pub fn emit_verify_packed_hints(builder: &mut ScriptBuilder, count: usize) {
+    assert!(count >= 2, "Packed hint verification requires at least 2 parts");
+    for _ in 1..count {
+        builder.op_cat();
+    }
+    builder.op_equalverify();
+    builder.push_int(1);
 }

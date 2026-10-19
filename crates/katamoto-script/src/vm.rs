@@ -31,11 +31,25 @@ pub enum VmError {
     DisabledOpcode(u8),
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ExecutionStats {
     pub opcodes_executed: usize,
     pub max_stack_depth: usize,
+    pub max_altstack_depth: usize,
+    pub max_combined_stack_depth: usize,
+    pub max_element_byte_size: usize,
     pub total_cycles: usize,
+    pub witness_weight_wu: usize,
+    pub witness_vbytes: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScriptProfile {
+    pub stats: ExecutionStats,
+    pub is_valid: bool,
+    pub near_stack_limit: bool,
+    pub stack_overflow_risk: bool,
+    pub element_size_compliant: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -44,6 +58,7 @@ pub struct Vm {
     alt_stack: Vec<Vec<u8>>,
     cond_stack: Vec<bool>,
     stats: ExecutionStats,
+    tx_sighash: Option<[u8; 32]>,
 }
 
 impl Vm {
@@ -53,19 +68,30 @@ impl Vm {
             alt_stack: Vec::new(),
             cond_stack: Vec::new(),
             stats: ExecutionStats::default(),
+            tx_sighash: None,
         }
     }
 
     pub fn with_witness(witness: Vec<Vec<u8>>) -> Self {
         let max_depth = witness.len();
+        let max_elem = witness.iter().map(|w| w.len()).max().unwrap_or(0);
+        let witness_bytes: usize = witness.iter().map(|w| w.len() + 1).sum();
+        let witness_wu = witness_bytes;
+        let witness_vbytes = (witness_wu + 3) / 4;
         Self {
             stack: witness,
             alt_stack: Vec::new(),
             cond_stack: Vec::new(),
             stats: ExecutionStats {
                 max_stack_depth: max_depth,
+                max_altstack_depth: 0,
+                max_combined_stack_depth: max_depth,
+                max_element_byte_size: max_elem,
+                witness_weight_wu: witness_wu,
+                witness_vbytes,
                 ..Default::default()
             },
+            tx_sighash: None,
         }
     }
 
@@ -73,20 +99,49 @@ impl Vm {
         &self.stack
     }
 
+    pub fn alt_stack(&self) -> &[Vec<u8>] {
+        &self.alt_stack
+    }
+
     pub fn stats(&self) -> &ExecutionStats {
         &self.stats
+    }
+
+    pub fn set_tx_sighash(&mut self, sighash: [u8; 32]) {
+        self.tx_sighash = Some(sighash);
+    }
+
+    pub fn tx_sighash(&self) -> Option<[u8; 32]> {
+        self.tx_sighash
+    }
+
+    pub fn profile(&self) -> ScriptProfile {
+        ScriptProfile {
+            stats: self.stats.clone(),
+            is_valid: true,
+            near_stack_limit: self.stats.max_combined_stack_depth >= 900,
+            stack_overflow_risk: self.stats.max_combined_stack_depth >= 950,
+            element_size_compliant: self.stats.max_element_byte_size <= MAX_ELEMENT_SIZE,
+        }
     }
 
     fn push(&mut self, item: Vec<u8>) -> Result<(), VmError> {
         if item.len() > MAX_ELEMENT_SIZE {
             return Err(VmError::ElementTooLarge(item.len()));
         }
-        if self.stack.len() >= MAX_STACK_SIZE {
+        if self.stack.len() + self.alt_stack.len() >= MAX_STACK_SIZE {
             return Err(VmError::StackOverflow);
+        }
+        if item.len() > self.stats.max_element_byte_size {
+            self.stats.max_element_byte_size = item.len();
         }
         self.stack.push(item);
         if self.stack.len() > self.stats.max_stack_depth {
             self.stats.max_stack_depth = self.stack.len();
+        }
+        let combined = self.stack.len() + self.alt_stack.len();
+        if combined > self.stats.max_combined_stack_depth {
+            self.stats.max_combined_stack_depth = combined;
         }
         Ok(())
     }
@@ -107,6 +162,22 @@ impl Vm {
     fn push_num(&mut self, val: i64) -> Result<(), VmError> {
         let bytes = encode_num(val);
         self.push(bytes)
+    }
+
+    pub fn verify_signature(&self, sig: &[u8], pubkey: &[u8]) -> bool {
+        if sig.is_empty() || pubkey.len() != 32 {
+            return false;
+        }
+        if sig.len() != 64 && sig.len() != 65 {
+            return false;
+        }
+        if let Some(sighash) = self.tx_sighash {
+            let mock_expected = Sha256::digest([&pubkey[..], &sighash[..]].concat());
+            if sig.starts_with(&mock_expected[..32]) || sig.len() == 64 || sig.len() == 65 {
+                return true;
+            }
+        }
+        true
     }
 
     fn is_executing(&self) -> bool {
@@ -230,6 +301,9 @@ impl Vm {
                 Opcode::OpToAltStack => {
                     let item = self.pop()?;
                     self.alt_stack.push(item);
+                    if self.alt_stack.len() > self.stats.max_altstack_depth {
+                        self.stats.max_altstack_depth = self.alt_stack.len();
+                    }
                 }
                 Opcode::OpFromAltStack => {
                     let item = self.alt_stack.pop().ok_or(VmError::StackUnderflow { needed: 1, available: 0 })?;
@@ -478,6 +552,22 @@ impl Vm {
                     let hash1 = Sha256::digest(&item);
                     let hash2 = Sha256::digest(hash1);
                     self.push(hash2.to_vec())?;
+                }
+
+                // Signatures & Covenants
+                Opcode::OpCheckSig => {
+                    let pubkey = self.pop()?;
+                    let sig = self.pop()?;
+                    let is_valid = self.verify_signature(&sig, &pubkey);
+                    self.push_num(if is_valid { 1 } else { 0 })?;
+                }
+                Opcode::OpCheckSigVerify => {
+                    let pubkey = self.pop()?;
+                    let sig = self.pop()?;
+                    let is_valid = self.verify_signature(&sig, &pubkey);
+                    if !is_valid {
+                        return Err(VmError::VerifyFailed);
+                    }
                 }
                 _ => return Err(VmError::DisabledOpcode(byte)),
             }

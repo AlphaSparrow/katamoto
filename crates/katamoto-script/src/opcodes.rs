@@ -81,12 +81,14 @@ pub enum Opcode {
     OpMax = 0xa4,
     OpWithin = 0xa5,
 
-    // Crypto Hashes
+    // Crypto Hashes & Signatures
     OpRipemd160 = 0xa6,
     OpSha1 = 0xa7,
     OpSha256 = 0xa8,
     OpHash160 = 0xa9,
     OpHash256 = 0xaa,
+    OpCheckSig = 0xac,
+    OpCheckSigVerify = 0xad,
 }
 
 impl Opcode {
@@ -173,6 +175,8 @@ impl Opcode {
             0xa8 => Some(Opcode::OpSha256),
             0xa9 => Some(Opcode::OpHash160),
             0xaa => Some(Opcode::OpHash256),
+            0xac => Some(Opcode::OpCheckSig),
+            0xad => Some(Opcode::OpCheckSigVerify),
             _ => None,
         }
     }

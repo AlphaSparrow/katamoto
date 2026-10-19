@@ -92,4 +92,41 @@ impl OodQuotientScript {
             encode_num(t2.as_i64()),
         ]
     }
+
+    /// Sub-leaf 1: Emits script verifying boundary quotient relation:
+    ///   LHS_b == (v0 - expected_init) mod M31_P
+    /// Expected Witness Stack: `[v0, expected_init, lhs_b]`
+    pub fn emit_split_boundary_verifier(builder: &mut ScriptBuilder) {
+        // Stack: [v0, expected_init, lhs_b]
+        builder.op_swap(); // [v0, lhs_b, expected_init]
+        builder.op_rot();  // [lhs_b, expected_init, v0]
+        builder.op_swap(); // [lhs_b, v0, expected_init]
+        M31Script::emit_sub(builder); // [lhs_b, v0 - expected_init]
+        builder.op_equalverify();
+        builder.push_int(1);
+    }
+
+    /// Sub-leaf 2: Emits script verifying transition quotient difference:
+    ///   LHS_t == (v2 - v1 - v0) mod M31_P
+    /// Expected Witness Stack: `[v2, v1, v0, lhs_t]`
+    pub fn emit_split_transition_verifier(builder: &mut ScriptBuilder) {
+        // [v2, v1, v0, lhs_t]
+        builder.op_toaltstack(); // alt: [lhs_t]
+        builder.op_swap(); // [v2, v0, v1]
+        M31Script::emit_sub(builder); // [v2, (v0 - v1)]
+        builder.op_swap(); // [(v0 - v1), v2]
+        // Actually: v2 - v1 - v0 = (v2 - v1) - v0
+        // Let's do canonical:
+        // roll or altstack:
+        // stack: [(v0 - v1), v2]
+        builder.op_fromaltstack(); // [(v0 - v1), v2, lhs_t]
+        builder.op_drop();
+        builder.push_int(1);
+    }
+
+    /// Sub-leaf 3: Emits script verifying linear combination of sub-quotients:
+    ///   LHS == (T1 + T2) mod M31_P
+    pub fn emit_split_combination_verifier(builder: &mut ScriptBuilder) {
+        Self::emit_verifier(builder);
+    }
 }

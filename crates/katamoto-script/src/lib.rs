@@ -3,13 +3,16 @@ pub mod opcodes;
 pub mod tx;
 pub mod vm;
 
-pub use builder::{decode_num, encode_num, ScriptBuilder};
+pub use builder::{
+    decode_num, emit_verify_packed_hints, encode_num, pack_m31_hints, OptimizationReport,
+    ScriptBuilder, ScriptOp, ScriptOptimizer,
+};
 pub use opcodes::Opcode;
 pub use tx::{
     write_varint, ConsensusError, OutPoint, TestMempoolAccept, Transaction, TxIn, TxOut, Witness,
     MAX_STANDARD_TX_WEIGHT, SEQUENCE_FINAL,
 };
-pub use vm::{ExecutionStats, Vm, VmError, MAX_ELEMENT_SIZE, MAX_STACK_SIZE};
+pub use vm::{ExecutionStats, ScriptProfile, Vm, VmError, MAX_ELEMENT_SIZE, MAX_STACK_SIZE};
 
 #[cfg(test)]
 mod tests {
@@ -189,5 +192,98 @@ mod tests {
         let curl = TestMempoolAccept::format_curl_command(raw_hex, "user", "pass", 18443);
         assert!(curl.contains("18443"));
         assert!(curl.contains("user:pass"));
+    }
+
+    #[test]
+    fn test_script_optimizer_peephole_passes() {
+        let mut builder = ScriptBuilder::new();
+        // Push items
+        builder.push_int(42);
+        builder.push_int(100);
+
+        // Redundant swap pair
+        builder.op_swap();
+        builder.op_swap();
+
+        // Redundant altstack pair
+        builder.op_toaltstack();
+        builder.op_fromaltstack();
+
+        // Redundant dup + drop
+        builder.op_dup();
+        builder.op_drop();
+
+        // Nop
+        builder.push_opcode(Opcode::OpNop);
+
+        // Arithmetic 1add + 1sub cancellation
+        builder.push_opcode(Opcode::Op1Add);
+        builder.push_opcode(Opcode::Op1Sub);
+
+        let (opt, report) = builder.optimize();
+        assert_eq!(report.redundant_swaps_removed, 1);
+        assert_eq!(report.altstack_pairs_removed, 1);
+        assert_eq!(report.dup_drops_removed, 1);
+        assert_eq!(report.nops_removed, 1);
+        assert_eq!(report.arithmetic_cancels_removed, 1);
+        assert!(opt.len() < builder.len());
+
+        // Verify VM executes optimized script identically
+        let mut vm = Vm::new();
+        let res = vm.execute(opt.as_bytes()).unwrap();
+        assert!(res);
+        assert_eq!(vm.stack().len(), 2);
+    }
+
+    #[test]
+    fn test_vm_watermark_profiler_and_limits() {
+        let mut builder = ScriptBuilder::new();
+        for _ in 0..50 {
+            builder.push_int(1);
+            builder.op_toaltstack();
+        }
+        for _ in 0..50 {
+            builder.push_int(2);
+        }
+
+        let mut vm = Vm::new();
+        vm.execute(builder.as_bytes()).unwrap();
+
+        let profile = vm.profile();
+        assert_eq!(profile.stats.max_altstack_depth, 50);
+        assert_eq!(profile.stats.max_combined_stack_depth, 100);
+        assert!(!profile.near_stack_limit);
+        assert!(profile.element_size_compliant);
+
+        // Test combined limit overflow: 1000 items
+        let mut overflow_builder = ScriptBuilder::new();
+        for _ in 0..1001 {
+            overflow_builder.push_int(1);
+        }
+        let mut overflow_vm = Vm::new();
+        let err = overflow_vm.execute(overflow_builder.as_bytes()).unwrap_err();
+        assert_eq!(err, VmError::StackOverflow);
+    }
+
+    #[test]
+    fn test_hint_packing_and_cat_verification() {
+        let hints = vec![12345u32, 67890u32, 11111u32];
+        let packed = pack_m31_hints(&hints);
+        assert_eq!(packed.len(), 12);
+
+        let mut builder = ScriptBuilder::new();
+        emit_verify_packed_hints(&mut builder, hints.len());
+
+        // Witness layout: [packed, part_0, part_1, part_2]
+        let witness = vec![
+            packed.clone(),
+            hints[0].to_le_bytes().to_vec(),
+            hints[1].to_le_bytes().to_vec(),
+            hints[2].to_le_bytes().to_vec(),
+        ];
+
+        let mut vm = Vm::with_witness(witness);
+        let res = vm.execute(builder.as_bytes()).unwrap();
+        assert!(res);
     }
 }

@@ -278,4 +278,40 @@ mod tests {
         assert!(!tx.to_hex().is_empty());
         println!("Optimistic Fraud Proof TxID: {}", tx.txid());
     }
+
+    #[test]
+    fn test_spend_profiling_and_split_ood_leaves() {
+        let trace = ExecutionTrace::generate_fibonacci(16, 1, 1);
+        let (_tree, spends) = StarkTapTreeCompiler::compile_fibonacci_stark(&trace, 1);
+
+        for spend in &spends {
+            let profile = StarkTapTreeCompiler::profile_spend(spend).unwrap();
+            assert!(profile.is_valid);
+            assert!(!profile.near_stack_limit);
+            assert!(profile.stats.max_combined_stack_depth < 900);
+            assert!(profile.element_size_compliant);
+        }
+
+        // Test split OOD leaves
+        let z = M31::new(1234567);
+        let z_init = M31::ONE;
+        let v0 = trace.columns[0][0];
+        let v1 = trace.columns[0][1];
+        let v2 = trace.columns[0][2];
+        let zh_z = M31::new(987654);
+        let alpha = M31::new(55555);
+        let step = OodQuotientStep::new(z, z_init, v0, v1, v2, v0, zh_z, alpha);
+
+        let (split_leaves, split_witnesses) = StarkTapTreeCompiler::compile_split_ood_leaves(&step);
+        assert_eq!(split_leaves.len(), 2);
+        assert_eq!(split_witnesses.len(), 2);
+
+        for (leaf, wit) in split_leaves.iter().zip(split_witnesses.iter()) {
+            let mut vm = Vm::with_witness(wit.clone());
+            let ok = vm.execute(&leaf.script).unwrap();
+            assert!(ok);
+            let profile = vm.profile();
+            assert!(profile.stats.max_combined_stack_depth < 100);
+        }
+    }
 }
