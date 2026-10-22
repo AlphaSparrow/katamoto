@@ -2,6 +2,7 @@ pub mod batch_merkle;
 pub mod circle_folding;
 pub mod folding;
 pub mod merkle;
+pub mod security;
 pub mod taproot;
 pub mod transcript;
 
@@ -14,6 +15,9 @@ pub use circle_folding::{
 };
 pub use folding::{FriQueryStep, FriRoundQuery, FriScript};
 pub use merkle::{hash_node, MerkleProof, MerkleScript, MerkleTree};
+pub use security::{
+    AdaptiveSecuritySelector, FriSecurityConfig, QueryDomainSampler, SettlementEstimate,
+};
 pub use taproot::{tagged_hash, TapLeaf, TapTree, TaprootStarkSpend, TAPSCRIPT_LEAF_VERSION};
 pub use transcript::{Transcript, TranscriptScript, TRANSCRIPT_INIT_SEED};
 
