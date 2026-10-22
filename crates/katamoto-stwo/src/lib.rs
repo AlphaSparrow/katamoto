@@ -1,8 +1,11 @@
 pub mod channel;
 pub mod compiler;
+pub mod header_verifier;
 pub mod proof;
 pub mod recursive_verifier;
 pub mod riscv;
+
+pub use header_verifier::{BitcoinHeader, HeaderChain, HeaderDisputeCompiler, HeaderScript};
 
 pub use channel::{StwoChannel, StwoChannelScript, STWO_CHANNEL_INIT_SEED};
 pub use compiler::{
@@ -345,6 +348,73 @@ mod tests {
             pkg_bitvm.metrics.tx_count
         );
     }
+
+    #[test]
+    fn test_zerosync_header_chain_verification_and_dispute_game() {
+        // Construct a chain of 2 consecutive Bitcoin headers
+        let header0 = BitcoinHeader {
+            version: 1,
+            prev_block_hash: [0x00; 32],
+            merkle_root: [0xaa; 32],
+            time: 1231006505,
+            nbits: 0x1d00ffff, // Mainnet difficulty 1 target
+            nonce: 2083236893,
+        };
+
+        let h0_hash = header0.block_hash();
+
+        let header1 = BitcoinHeader {
+            version: 1,
+            prev_block_hash: h0_hash,
+            merkle_root: [0xbb; 32],
+            time: 1231007105,
+            nbits: 0x1d00ffff,
+            nonce: 2573394689,
+        };
+
+        let chain = HeaderChain::new(vec![header0, header1]);
+        let stmt = chain.to_statement();
+        assert_eq!(stmt.initial_state_root, h0_hash);
+        assert_eq!(stmt.final_state_root, chain.headers[1].block_hash());
+
+        let steps = chain.synthesize_steps();
+        assert_eq!(steps.len(), 4); // 2 steps per header
+
+        // Verify steps semantics in zkVM
+        for step in &steps {
+            assert!(step.is_valid());
+        }
+
+        // Compile header chain dispute tree
+        let operator_key = [0x55; 32];
+        let challenger_key = [0x66; 32];
+        let (_graph, tree, spends) = HeaderDisputeCompiler::compile_header_dispute(
+            &chain,
+            operator_key,
+            challenger_key,
+            100_000_000,
+            144,
+        );
+
+        assert_eq!(tree.leaves.len(), 2);
+        assert_eq!(spends.len(), 2);
+
+        // Execute header continuity checks in the Bitcoin Script VM
+        for spend in &spends {
+            let mut vm = Vm::with_witness(spend.witness_items.clone());
+            let ok = vm.execute(&spend.leaf_script).expect("Header script failed");
+            assert!(ok);
+            assert_eq!(vm.stack().last().unwrap(), &[1]);
+        }
+
+        println!(
+            "ZeroSync Header Chain Light Client: Verified {} headers, Genesis=0x{}, Tip=0x{}",
+            chain.headers.len(),
+            hex::encode(h0_hash),
+            hex::encode(stmt.final_state_root)
+        );
+    }
 }
+
 
 
