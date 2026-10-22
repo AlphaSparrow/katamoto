@@ -5,7 +5,10 @@ pub mod recursive_verifier;
 pub mod riscv;
 
 pub use channel::{StwoChannel, StwoChannelScript, STWO_CHANNEL_INIT_SEED};
-pub use compiler::{StwoTapTreeCompiler, StwoTapTreeSpendPackage, StwoTelemetry};
+pub use compiler::{
+    DualBackendCompiler, DualBackendSpendPackage, SettlementMetrics, StwoTapTreeCompiler,
+    StwoTapTreeSpendPackage, StwoTelemetry, VerificationBackend,
+};
 pub use proof::{StwoFriProof, StwoFriQuery, StwoOodEvaluations, StwoProof, StwoProofError};
 pub use recursive_verifier::{
     CanonicalRecursiveProof, CanonicalRecursiveTapTree, RecursiveVerifierConfig,
@@ -249,5 +252,99 @@ mod tests {
             hex::encode(tap_tree.root())
         );
     }
+
+    #[test]
+    fn test_dual_backend_compiler_opcat_vs_bitvm() {
+        let col0 = MixedColumn::new((0..16).map(|i| M31::new(i * 10)).collect());
+        let col1 = MixedColumn::new((0..8).map(|i| M31::new(i * 20 + 1)).collect());
+        let columns = vec![col0, col1];
+        let mixed_tree = MixedBatchMerkleTree::new(columns.clone());
+        let trace_root = mixed_tree.root();
+
+        let ood_evaluations = StwoOodEvaluations {
+            ood_point_x: QM31::from_u32(17, 0, 0, 0),
+            ood_point_y: QM31::ZERO,
+            trace_evals: vec![QM31::from_u32(10, 0, 0, 0)],
+            quotient_eval: QM31::from_u32(5, 0, 0, 0),
+        };
+
+        let fri_proof = StwoFriProof {
+            round_commitments: vec![[0x11u8; 32]],
+            queries: vec![
+                StwoFriQuery {
+                    query_idx: 1,
+                    f_p: M31::new(100),
+                    f_conj: M31::new(200),
+                    merkle_proof: MerkleProof {
+                        leaf: [0u8; 32],
+                        siblings: vec![],
+                        directions: vec![],
+                    },
+                },
+            ],
+            final_poly_coefficients: vec![QM31::ONE],
+        };
+
+        let pow_bits = 8;
+        let mut pow_nonce = 0u64;
+        while !katamoto_fri::Transcript::verify_pow(&trace_root, pow_nonce, pow_bits) {
+            pow_nonce += 1;
+        }
+
+        let proof = StwoProof {
+            statement_hash: [0xaa; 32],
+            preprocessed_root: None,
+            trace_root,
+            lookup_root: None,
+            quotient_root: [0xbb; 32],
+            ood_evaluations,
+            fri_proof,
+            pow_nonce,
+            pow_bits,
+        };
+
+        // 1. Compile for Backend A: OP_CAT Signet
+        let pkg_opcat = DualBackendCompiler::compile(
+            &proof,
+            &columns,
+            3,
+            None,
+            None,
+            VerificationBackend::OpCatSignet,
+        );
+        assert_eq!(pkg_opcat.metrics.backend, VerificationBackend::OpCatSignet);
+        assert!(pkg_opcat.metrics.op_cat_required);
+        assert_eq!(pkg_opcat.metrics.tx_count, 1);
+
+        // 2. Compile for Backend B: Mainnet BitVM OTS
+        let pkg_bitvm = DualBackendCompiler::compile(
+            &proof,
+            &columns,
+            3,
+            None,
+            None,
+            VerificationBackend::MainnetBitVmOts,
+        );
+        assert_eq!(pkg_bitvm.metrics.backend, VerificationBackend::MainnetBitVmOts);
+        assert!(!pkg_bitvm.metrics.op_cat_required, "Mainnet BitVM must NOT require OP_CAT");
+        assert_eq!(pkg_bitvm.metrics.tx_count, 4);
+        assert!(pkg_bitvm.dispute_graph.is_some());
+
+        // Verify that the disprove leaf executes successfully in the Bitcoin Script VM
+        let disprove_spend = &pkg_bitvm.spends[1];
+        let mut vm = Vm::with_witness(disprove_spend.witness_items.clone());
+        let ok = vm.execute(&disprove_spend.leaf_script).expect("BitVM disprove spend failed");
+        assert!(ok);
+        assert_eq!(vm.stack().last().unwrap(), &[1]);
+
+        println!(
+            "Dual-Backend Comparison: OP_CAT vBytes={} (Txs: {}), BitVM OTS vBytes={} (Txs: {})",
+            pkg_opcat.metrics.total_vbytes,
+            pkg_opcat.metrics.tx_count,
+            pkg_bitvm.metrics.total_vbytes,
+            pkg_bitvm.metrics.tx_count
+        );
+    }
 }
+
 

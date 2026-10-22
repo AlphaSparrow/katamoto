@@ -5,7 +5,7 @@ pub mod quotient;
 pub mod taptree_compiler;
 pub mod trace;
 
-pub use bisection::{BisectionState, BitVm2DisputeGraph, DisputeResolutionScript};
+pub use bisection::{BisectionState, BitVm2DisputeGraph, DisputeResolutionScript, WotsDisputeResolution};
 pub use constraints::{BoundaryConstraint, FibonacciTransition, LogUpScript, LogUpStep, LogUpTable};
 pub use dsl::{
     constant, curr, next, AirDslError, AirSystem, BitwiseOpsGadget, Blake3RoundGadget, Cell,
@@ -469,4 +469,42 @@ mod tests {
         let mut vm_blake = Vm::with_witness(wit_blake);
         assert!(vm_blake.execute(b_blake.as_bytes()).unwrap());
     }
+
+    #[test]
+    fn test_wots_mainnet_fraud_proof_dispute_verification() {
+        use katamoto_script::ots::WotsM31Commitment;
+
+        let seed = [0x77u8; 32];
+        let tag = b"BITVM_DISPUTE_STEP_3";
+        let (sk, pk) = WotsM31Commitment::keygen(&seed, tag);
+
+        // State transition: prev = 5, curr = 8.
+        // Expected valid next = (8 + 5) = 13.
+        // Malicious prover claims next = 999!
+        let prev = 5u32;
+        let curr = 8u32;
+        let fraudulent_claimed = 999u32;
+
+        // Prover signs fraudulent claim with W-OTS
+        let sig = WotsM31Commitment::sign(&sk, fraudulent_claimed);
+        assert!(WotsM31Commitment::verify(&pk, fraudulent_claimed, &sig));
+
+        // Build fraud verifier script (Zero OP_CAT!)
+        let mut builder = ScriptBuilder::new();
+        WotsDisputeResolution::emit_wots_fraud_verifier(&mut builder, &pk, fraudulent_claimed);
+
+        let witness = WotsDisputeResolution::create_wots_fraud_witness(&sig, fraudulent_claimed, curr, prev);
+        let mut vm = Vm::with_witness(witness);
+        let ok = vm.execute(builder.as_bytes()).expect("Dispute verification failed");
+        assert!(ok);
+        assert_eq!(vm.stack().last().unwrap(), &[1]);
+
+        println!(
+            "W-OTS BitVM Fraud Proof Verified: Script Size={} B, Ops={}, Stack Depth={}",
+            builder.len(),
+            builder.opcode_count(),
+            vm.stats().max_stack_depth
+        );
+    }
 }
+

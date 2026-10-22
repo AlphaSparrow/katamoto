@@ -118,6 +118,47 @@ impl DisputeResolutionScript {
     }
 }
 
+/// Fraud proof dispute resolution using Winternitz OTS for OP_CAT-free mainnet verification
+pub struct WotsDisputeResolution;
+
+impl WotsDisputeResolution {
+    /// Emits script that:
+    /// 1. Verifies the operator committed to claimed_val via W-OTS against pk_claimed
+    /// 2. Computes expected = (curr + prev) % M31_P
+    /// 3. Checks claimed_val != expected (fraud proof) -> slashes bond!
+    pub fn emit_wots_fraud_verifier(
+        builder: &mut ScriptBuilder,
+        pk_claimed: &katamoto_script::ots::WotsM31PublicKey,
+        claimed_val: u32,
+    ) {
+        // 1. Verify WOTS commitment on claimed_val (pops 10 preimages, leaves 1 on stack)
+        katamoto_script::ots::WotsM31Commitment::emit_verifier(builder, pk_claimed, claimed_val);
+        builder.op_drop(); // drop TRUE flag from WOTS verifier
+
+        // Stack now has: [claimed_val, curr, prev]
+        DisputeResolutionScript::emit_fibonacci_fraud_verifier(builder);
+    }
+
+    /// Creates combined witness:
+    /// `[claimed_val, curr, prev, sig_0, sig_1, ..., sig_9]`
+    pub fn create_wots_fraud_witness(
+        claimed_sig: &katamoto_script::ots::WotsM31Signature,
+        claimed_val: u32,
+        curr: u32,
+        prev: u32,
+    ) -> Vec<Vec<u8>> {
+        let mut witness = Vec::new();
+        // Values at bottom of stack
+        witness.push(encode_num(claimed_val as i64));
+        witness.push(encode_num(curr as i64));
+        witness.push(encode_num(prev as i64));
+
+        // WOTS signature preimages (popped first for WOTS verifier)
+        witness.extend(katamoto_script::ots::WotsM31Commitment::create_witness(claimed_sig));
+        witness
+    }
+}
+
 /// BitVM2 Multi-Transaction Dispute Protocol Graph
 /// Enforces the complete Assert -> Challenge -> Disprove state machine on Bitcoin
 #[derive(Debug, Clone)]
