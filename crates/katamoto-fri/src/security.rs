@@ -1,4 +1,4 @@
-use katamoto_field::M31;
+// FRI security parameter presets and adaptive grinding configuration
 
 /// Security level presets for Circle STARK verification on Bitcoin
 ///
