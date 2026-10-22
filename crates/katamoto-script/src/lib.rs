@@ -2,7 +2,10 @@ pub mod builder;
 pub mod opcodes;
 pub mod ots;
 pub mod tx;
+pub mod vault;
 pub mod vm;
+
+pub use vault::{PactVault, PactVaultSpends};
 
 pub use builder::{
     decode_num, emit_verify_packed_hints, encode_num, pack_m31_hints, OptimizationReport,
@@ -459,5 +462,53 @@ mod tests {
         assert!(ok);
         assert_eq!(vm.stack().last().unwrap(), &[1]);
     }
+
+    #[test]
+    fn test_post_quantum_vault_emergency_recovery_spend() {
+        let provisional_key = [0x11u8; 32];
+        let recovery_secret = [0x42u8; 32];
+        let seed = [0x55u8; 32];
+        let (sk, pk) = WotsM31Commitment::keygen(&seed, b"PACT_RECOVERY_KEY");
+
+        let unvault_delay = 144; // 144 blocks
+        let vault_amount = 500_000_000; // 5 BTC
+
+        let vault = PactVault::new(
+            provisional_key,
+            &recovery_secret,
+            pk,
+            unvault_delay,
+            vault_amount,
+        );
+
+        let auth_code = 1234567u32;
+        let auth_sig = WotsM31Commitment::sign(&sk, auth_code);
+        let spends = vault.compile_vault(auth_code);
+
+        // Execute Quantum Recovery Path in the Bitcoin Script VM
+        let witness = PactVault::create_recovery_witness(&recovery_secret, &auth_sig);
+        let mut vm = Vm::with_witness(witness.clone());
+        let ok = vm.execute(&spends.script_recovery).expect("Recovery script execution failed");
+        assert!(ok);
+        assert_eq!(vm.stack().last().unwrap(), &[1]);
+
+        // Build and validate emergency rescue transaction
+        let vault_outpoint = OutPoint::new([0xee; 32], 0);
+        let post_quantum_cold_storage = TxOut::op_return(b"QUANTUM_COLD_STORAGE", 0).script_pubkey;
+        let rescue_tx = vault.build_emergency_rescue_tx(
+            vault_outpoint,
+            post_quantum_cold_storage,
+            witness,
+        );
+
+        assert!(rescue_tx.validate_consensus_limits().is_ok());
+        println!(
+            "PACT Post-Quantum Vault: Rescued {} satoshis, TxID={}, VSize={} vB (Zero ECDSA / Zero Schnorr!)",
+            rescue_tx.outputs[0].value,
+            rescue_tx.txid(),
+            rescue_tx.vsize()
+        );
+    }
 }
+
 
