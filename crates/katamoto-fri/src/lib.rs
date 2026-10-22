@@ -9,7 +9,8 @@ pub use batch_merkle::{
     BatchMerkleScript, BatchMerkleTree, MixedBatchMerkleScript, MixedBatchMerkleTree, MixedColumn,
 };
 pub use circle_folding::{
-    CircleFriRoundQuery, CircleFriScript, CircleFriXStep, CircleFriYStep,
+    CircleFri4To1Step, CircleFri8To1Step, CircleFriRoundQuery, CircleFriScript, CircleFriXStep,
+    CircleFriYStep, PackedCircleFriWitness,
 };
 pub use folding::{FriQueryStep, FriRoundQuery, FriScript};
 pub use merkle::{hash_node, MerkleProof, MerkleScript, MerkleTree};
@@ -416,6 +417,100 @@ mod tests {
         assert!(ok);
         assert_eq!(vm.stack().last().unwrap(), &[1]);
     }
+
+    #[test]
+    fn test_high_arity_4to1_circle_folding_verification() {
+        use katamoto_field::circle::circle_subgroup_generator;
+        use katamoto_field::M31;
+
+        // Subgroup generator of order 8
+        let gen = circle_subgroup_generator(3);
+        let p = gen;
+
+        // 4 sibling evaluations
+        let v00 = M31::new(100);
+        let v01 = M31::new(200);
+        let v10 = M31::new(300);
+        let v11 = M31::new(400);
+        let alpha_y = M31::new(42);
+        let alpha_x = M31::new(99);
+
+        let step_4to1 = CircleFri4To1Step::new(p, v00, v01, v10, v11, alpha_y, alpha_x);
+        let triples = step_4to1.decompose();
+        assert_eq!(triples.len(), 3);
+        assert_eq!(triples[0].0, triples[0].1 + triples[0].2);
+        assert_eq!(triples[1].0, triples[1].1 + triples[1].2);
+        assert_eq!(triples[2].0, triples[2].1 + triples[2].2);
+
+        // Verify in Bitcoin Script VM
+        let mut builder = ScriptBuilder::new();
+        CircleFriScript::emit_4to1_colinearity_verifier(&mut builder);
+        let witness = CircleFriScript::create_4to1_witness(&step_4to1);
+
+        let mut vm = Vm::with_witness(witness);
+        let ok = vm.execute(builder.as_bytes()).expect("4-to-1 verification failed");
+        assert!(ok);
+        assert_eq!(vm.stack().last().unwrap(), &[1]);
+
+        println!(
+            "High-Arity 4-to-1 Fold Verified: Script Size={} B, Opcodes={}, Stack Depth={}",
+            builder.len(),
+            builder.opcode_count(),
+            vm.stats().max_stack_depth
+        );
+    }
+
+    #[test]
+    fn test_high_arity_8to1_circle_folding_with_witness_packing() {
+        use katamoto_field::circle::circle_subgroup_generator;
+        use katamoto_field::M31;
+
+        // Subgroup generator of order 32 ensures pi(x_a) != 0 for 3-layer folding
+        let gen = circle_subgroup_generator(5);
+        let point_a = gen;
+
+        let vals_a = [M31::new(11), M31::new(22), M31::new(33), M31::new(44)];
+        let vals_b = [M31::new(55), M31::new(66), M31::new(77), M31::new(88)];
+
+        // Test witness packing
+        let packed_4 = PackedCircleFriWitness::pack_4_siblings(vals_a[0], vals_a[1], vals_a[2], vals_a[3]);
+        assert_eq!(packed_4.len(), 16);
+
+        let mut all_8 = [M31::ZERO; 8];
+        all_8[..4].copy_from_slice(&vals_a);
+        all_8[4..].copy_from_slice(&vals_b);
+        let packed_8 = PackedCircleFriWitness::pack_8_siblings(&all_8);
+        assert_eq!(packed_8.len(), 32);
+
+        let alpha_y = M31::new(17);
+        let alpha_x = M31::new(31);
+        let alpha_pi = M31::new(53);
+
+        let step_8to1 = CircleFri8To1Step::new(point_a, vals_a, vals_b, alpha_y, alpha_x, alpha_pi);
+        let triples = step_8to1.decompose();
+        assert_eq!(triples.len(), 7);
+        for (i, t) in triples.iter().enumerate() {
+            assert_eq!(t.0, t.1 + t.2, "Triple {} failed", i);
+        }
+
+        // Verify in Bitcoin Script VM
+        let mut builder = ScriptBuilder::new();
+        CircleFriScript::emit_8to1_colinearity_verifier(&mut builder);
+        let witness = CircleFriScript::create_8to1_witness(&step_8to1);
+
+        let mut vm = Vm::with_witness(witness);
+        let ok = vm.execute(builder.as_bytes()).expect("8-to-1 verification failed");
+        assert!(ok);
+        assert_eq!(vm.stack().last().unwrap(), &[1]);
+
+        println!(
+            "High-Arity 8-to-1 Fold Verified: Script Size={} B, Opcodes={}, Stack Depth={} (Intermediate Merkle Roots Saved: 2)",
+            builder.len(),
+            builder.opcode_count(),
+            vm.stats().max_stack_depth
+        );
+    }
 }
+
 
 
