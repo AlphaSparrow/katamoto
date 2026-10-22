@@ -20,12 +20,14 @@ use katamoto_fri::{
 };
 use katamoto_script::{
     builder::encode_num,
-    ots::WinternitzOTS,
-    tx::CovenantScript,
+    ots::{WinternitzOTS, WotsM31Commitment},
+    tx::{CovenantScript, TxOut},
+    vault::PactVault,
     OutPoint, ScriptBuilder, TestMempoolAccept, Vm,
 };
 use katamoto_stwo::{
-    compiler::StwoTapTreeCompiler,
+    compiler::{DualBackendCompiler, StwoTapTreeCompiler, VerificationBackend},
+    header_verifier::{BitcoinHeader, HeaderChain, HeaderDisputeCompiler},
     proof::{StwoFriProof, StwoFriQuery, StwoOodEvaluations, StwoProof},
     riscv::{RiscvOpcode, RiscvStatement, RiscvStep},
 };
@@ -59,6 +61,8 @@ COMMANDS:
     compile-taproot [QUERIES]          Compile complete BIP-341 Taproot STARK tree and emit witness spend
     emit-script [DEPTH]                Emit raw Bitcoin Tapscript bytecode hex (default: 8)
     benchmark-settlement [LOG_DOMAIN]  Compare OP_CAT vs BitVM OTS settlement metrics across FRI arities
+    pq-vault [SATOSHIS] [TIMELOCK]     Demonstrate Post-Quantum Recoverable Bitcoin Vault (PACT) under quantum attack
+    verify-headers [COUNT]             Verify ZeroSync-style Bitcoin block header chain in zkVM & dispute TapTree
     help                               Print this help message
 "#);
 }
@@ -963,7 +967,6 @@ fn main() {
                 pow_bits,
             };
 
-            use katamoto_stwo::compiler::{DualBackendCompiler, VerificationBackend};
 
             let pkg_opcat = DualBackendCompiler::compile(
                 &proof, &columns, 3, None, None,
@@ -1016,6 +1019,178 @@ fn main() {
             println!("  PoW grinding dramatically reduces settlement data, making Circle STARKs");
             println!("  competitive with Groth16's 192-byte proofs when amortized across TapLeaves.");
             println!();
+        }
+
+        "pq-vault" => {
+            let satoshis: u64 = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(50_000_000); // 0.5 BTC
+            let timelock: u32 = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(144); // 144 blocks (~24 hours)
+
+            println!("\n==========================================================================================");
+            println!("  KATAMOTO: Post-Quantum Recoverable Bitcoin Vault (PACT)");
+            println!("  Zero Elliptic Curves | Winternitz OTS + STARK Preimage Verification on Script");
+            println!("==========================================================================================");
+            println!("  Vault Deposit Value:     {} satoshis ({:.4} BTC)", satoshis, satoshis as f64 / 100_000_000.0);
+            println!("  Unvault Delay Timelock:  {} blocks (~{:.1} hours)", timelock, (timelock * 10) as f64 / 60.0);
+
+            // 1. Setup Keys
+            let provisional_key = [0x11u8; 32]; // Schnorr/ECDSA provisional key
+            let recovery_secret = [0x42u8; 32]; // Quantum recovery STARK/hash preimage
+            let seed = [0x55u8; 32];
+            let (sk, pk) = WotsM31Commitment::keygen(&seed, b"PACT_RECOVERY_KEY");
+
+            let vault = PactVault::new(
+                provisional_key,
+                &recovery_secret,
+                pk,
+                timelock,
+                satoshis,
+            );
+
+            let auth_code = 1234567u32;
+            let spends = vault.compile_vault(auth_code);
+
+            println!("\n  ── Vault TapTree Architecture ──");
+            println!("  Simulated TapTree Root:  0x{}", hex::encode(spends.vault_tree_root));
+            println!("  Path 1 (Classical):      {} bytes (OP_CSV timelock + OP_CHECKSIG)", spends.script_classical.len());
+            println!("  Path 2 (Post-Quantum):   {} bytes (WOTS M31 state binding + SHA-256 preimage)", spends.script_recovery.len());
+
+            // 2. Simulate Attack Scenario
+            println!("\n  ── Threat Simulation: Shor's Quantum Algorithm ──");
+            println!("  [ALERT] Quantum adversary with Shor's algorithm derives private key from Schnorr public key!");
+            println!("  [ALERT] Adversary broadcasts unauthorized unvaulting transaction targeting Path 1.");
+            println!("  [PACT]  Relative timelock engages: transaction is frozen in mempool for {} blocks.", timelock);
+            println!("  [PACT]  Vault owner initiates instant Post-Quantum Emergency Rescue via Path 2...");
+
+            // 3. Generate Post-Quantum Witness
+            let start = Instant::now();
+            let auth_sig = WotsM31Commitment::sign(&sk, auth_code);
+            let witness = PactVault::create_recovery_witness(&recovery_secret, &auth_sig);
+            let wit_time = start.elapsed();
+
+            println!("  WOTS M31 Signature:      10 preimage hash-chain elements generated in {:.2?}", wit_time);
+            println!("  Emergency Witness Size:  {} stack elements ({} bytes total)", witness.len(), witness.iter().map(|w| w.len()).sum::<usize>());
+
+            // 4. Execute on Bitcoin Script VM
+            let vm_start = Instant::now();
+            let mut vm = Vm::with_witness(witness.clone());
+            let ok = vm.execute(&spends.script_recovery).expect("Recovery script execution failed");
+            let vm_time = vm_start.elapsed();
+
+            assert!(ok);
+            assert_eq!(vm.stack().last().unwrap(), &[1]);
+
+            // 5. Build and validate emergency rescue transaction
+            let vault_outpoint = OutPoint::new([0xee; 32], 0);
+            let post_quantum_cold_storage = TxOut::op_return(b"PACT_QUANTUM_RESCUED", 0).script_pubkey;
+            let rescue_tx = vault.build_emergency_rescue_tx(
+                vault_outpoint,
+                post_quantum_cold_storage,
+                witness,
+            );
+
+            assert!(rescue_tx.validate_consensus_limits().is_ok());
+
+            println!("\n  ── Emergency Rescue Transaction Telemetry ──");
+            println!("  Transaction ID (TxID):   {}", rescue_tx.txid());
+            println!("  Total Weight Units:      {} WU", rescue_tx.weight());
+            println!("  Virtual Size:            {} vB", rescue_tx.vsize());
+            println!("  Standard Mempool Limit:  400,000 WU (Spend is {:.2}% of limit)", (rescue_tx.weight() as f64 / 400_000.0) * 100.0);
+            println!("  Bitcoin Script VM:       VERIFIED in {:.2?}", vm_time);
+            println!("  Security Assumptions:    100% Hash-Based (Zero Elliptic Curves, Zero Trusted Setup)");
+            println!("  [SUCCESS] Funds successfully rescued to quantum-resistant cold storage!\n");
+        }
+
+        "verify-headers" => {
+            let count: usize = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(4);
+            let count = count.max(2);
+
+            println!("\n==========================================================================================");
+            println!("  KATAMOTO: ZeroSync-Style Bitcoin Block Header Chain Verifier in zkVM");
+            println!("  Double-SHA256 PoW + Difficulty Targets + Merkle Roots Chaining on Script");
+            println!("==========================================================================================");
+            println!("  Block Header Count:      {}", count);
+
+            let start = Instant::now();
+
+            // 1. Build realistic header chain
+            let mut headers = Vec::new();
+            let mut prev_hash = [0x00u8; 32];
+            let mut timestamp = 1231006505u32; // Genesis timestamp
+
+            for i in 0..count {
+                let mut merkle = [0xaa; 32];
+                merkle[0] = i as u8;
+                let header = BitcoinHeader {
+                    version: 1,
+                    prev_block_hash: prev_hash,
+                    merkle_root: merkle,
+                    time: timestamp,
+                    nbits: 0x1d00ffff, // Standard difficulty 1 target
+                    nonce: 2083236893 + (i as u32 * 1000),
+                };
+                prev_hash = header.block_hash();
+                timestamp += 600; // 10 minutes
+                headers.push(header);
+            }
+
+            let chain = HeaderChain::new(headers);
+            let stmt = chain.to_statement();
+            let steps = chain.synthesize_steps();
+
+            println!("  Genesis Block Hash:      0x{}", hex::encode(stmt.initial_state_root));
+            println!("  Tip Block Hash:          0x{}", hex::encode(stmt.final_state_root));
+            println!("  Total RV32I zkVM Steps:  {} CPU cycles synthesized", steps.len());
+            println!("  Chain Synthesis Time:    {:.2?}", start.elapsed());
+
+            // 2. Compile to dispute tree
+            let operator_key = [0x55; 32];
+            let challenger_key = [0x66; 32];
+            let bond_satoshis = 100_000_000; // 1 BTC bond
+            let dispute_timelock = 144;
+
+            let (graph, tree, spends) = HeaderDisputeCompiler::compile_header_dispute(
+                &chain,
+                operator_key,
+                challenger_key,
+                bond_satoshis,
+                dispute_timelock,
+            );
+
+            println!("\n  ── Header Verification TapTree Architecture ──");
+            println!("  Dispute Graph Bond:      {} satoshis (1.0 BTC)", graph.bond_satoshis);
+            println!("  Dispute Leaves Count:    {} TapLeaves", tree.leaves.len());
+            println!("  Dispute TapTree Root:    0x{}", hex::encode(tree.root()));
+
+            println!("\n  ── On-Chain Execution Telemetry ──");
+            println!("  ┌───────┬──────────────────────────────────┬────────────┬─────────────┬───────────┐");
+            println!("  │ Block │ Block Hash (Double-SHA256)       │ Script (B) │ VM Status   │ Exec Time │");
+            println!("  ├───────┼──────────────────────────────────┼────────────┼─────────────┼───────────┤");
+
+            for (i, spend) in spends.iter().enumerate() {
+                let vm_t0 = Instant::now();
+                let mut vm = Vm::with_witness(spend.witness_items.clone());
+                let ok = vm.execute(&spend.leaf_script).expect("Header verification script failed");
+                let el = vm_t0.elapsed();
+                assert!(ok);
+                assert_eq!(vm.stack().last().unwrap(), &[1]);
+
+                let h_hex = hex::encode(chain.headers[i].block_hash());
+                println!(
+                    "  │ {:>5} │ 0x{}...{} │ {:>10} │ {:>11} │ {:>9.2?} │",
+                    i,
+                    &h_hex[..12],
+                    &h_hex[h_hex.len() - 8..],
+                    spend.leaf_script.len(),
+                    "VALID (OK)",
+                    el
+                );
+            }
+            println!("  └───────┴──────────────────────────────────┴────────────┴─────────────┴───────────┘");
+
+            println!();
+            println!("  Summary: Compact 80-byte block header verification requires only {} bytes", spends[0].leaf_script.len());
+            println!("  of Tapscript per header, well below the 520-byte standard limit.");
+            println!("  [SUCCESS] ZeroSync block header chain verified end-to-end on Bitcoin Script!\n");
         }
 
         "help" | "-h" | "--help" => print_usage(),
