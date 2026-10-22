@@ -38,7 +38,8 @@ impl BitcoinHeader {
         hash
     }
 
-    /// Expands compact nBits target into 256-bit Big-Endian difficulty target
+    /// Expands compact nBits target into 256-bit Little-Endian difficulty target
+    /// matching the byte order of `block_hash()`
     pub fn target_bytes(&self) -> [u8; 32] {
         let mut target = [0u8; 32];
         let exponent = ((self.nbits >> 24) & 0xff) as usize;
@@ -46,16 +47,13 @@ impl BitcoinHeader {
 
         if exponent <= 3 {
             let val = mantissa >> (8 * (3 - exponent));
-            let val_bytes = val.to_be_bytes();
-            target[32 - val_bytes.len()..].copy_from_slice(&val_bytes);
-        } else {
+            let val_bytes = val.to_le_bytes();
+            let len = val_bytes.len().min(32);
+            target[..len].copy_from_slice(&val_bytes[..len]);
+        } else if exponent <= 32 {
             let offset = exponent - 3;
-            if offset < 29 {
-                let m_bytes = (mantissa as u32).to_be_bytes();
-                // Find start in target
-                let start = 32 - offset - 3;
-                target[start..start + 3].copy_from_slice(&m_bytes[1..4]);
-            }
+            let m_bytes = (mantissa as u32).to_le_bytes();
+            target[offset..offset + 3].copy_from_slice(&m_bytes[0..3]);
         }
         target
     }
