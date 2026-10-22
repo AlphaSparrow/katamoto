@@ -1,11 +1,15 @@
 pub mod channel;
 pub mod compiler;
 pub mod proof;
+pub mod recursive_verifier;
 pub mod riscv;
 
 pub use channel::{StwoChannel, StwoChannelScript, STWO_CHANNEL_INIT_SEED};
 pub use compiler::{StwoTapTreeCompiler, StwoTapTreeSpendPackage, StwoTelemetry};
 pub use proof::{StwoFriProof, StwoFriQuery, StwoOodEvaluations, StwoProof, StwoProofError};
+pub use recursive_verifier::{
+    CanonicalRecursiveProof, CanonicalRecursiveTapTree, RecursiveVerifierConfig,
+};
 pub use riscv::{RiscvOpcode, RiscvScript, RiscvStatement, RiscvStep};
 
 #[cfg(test)]
@@ -202,4 +206,48 @@ mod tests {
             package.telemetry.max_witness_bytes
         );
     }
+
+    #[test]
+    fn test_canonical_fixed_recursive_taptree_verification() {
+        let stmt = RiscvStatement {
+            initial_pc: 0x80000000,
+            final_pc: 0x80000020,
+            cycle_count: 8,
+            initial_state_root: [0x11; 32],
+            final_state_root: [0x22; 32],
+            program_digest: [0x33; 32],
+        };
+
+        // Synthesize canonical recursive proof
+        let recursive_proof = CanonicalRecursiveProof::synthesize(stmt);
+        assert_eq!(recursive_proof.canonical_columns.len(), 16);
+        assert_eq!(recursive_proof.config.log_degree, 8);
+
+        // Compile into pinned 8-leaf TapTree
+        let (tap_tree, spends) = CanonicalRecursiveTapTree::compile(&recursive_proof, 42);
+        assert_eq!(tap_tree.leaves.len(), CanonicalRecursiveTapTree::PINNED_LEAF_COUNT);
+        assert_eq!(spends.len(), CanonicalRecursiveTapTree::PINNED_LEAF_COUNT);
+
+        // Verify leaf names match constant specification
+        for (i, name) in CanonicalRecursiveTapTree::PINNED_LEAF_NAMES.iter().enumerate() {
+            assert_eq!(&spends[i].leaf_name, name);
+        }
+
+        // Execute all 8 pinned leaves in Bitcoin Script VM!
+        for spend in &spends {
+            let mut vm = Vm::with_witness(spend.witness_items.clone());
+            let ok = vm
+                .execute(&spend.leaf_script)
+                .unwrap_or_else(|e| panic!("Execution of leaf '{}' failed: {:?}", spend.leaf_name, e));
+            assert!(ok, "Leaf '{}' failed", spend.leaf_name);
+            assert_eq!(vm.stack().last().unwrap(), &[1]);
+        }
+
+        println!(
+            "Canonical Recursive Verifier TapTree Verified! Pinned Leaves={}, Root=0x{}",
+            tap_tree.leaves.len(),
+            hex::encode(tap_tree.root())
+        );
+    }
 }
+
