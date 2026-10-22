@@ -10,8 +10,10 @@ pub use builder::{
 };
 pub use opcodes::Opcode;
 pub use ots::{
-    LamportOTS, LamportPrivateKey, LamportPublicKey, LamportSignature, WinternitzOTS,
-    WotsPrivateKey, WotsPublicKey, WotsSignature,
+    EquivocationProof, LamportOTS, LamportPrivateKey, LamportPublicKey, LamportSignature,
+    WinternitzOTS, WotsM31Commitment, WotsM31PrivateKey, WotsM31PublicKey, WotsM31Signature,
+    WotsPrivateKey, WotsPublicKey, WotsQm31Commitment, WotsQm31PrivateKey, WotsQm31PublicKey,
+    WotsQm31Signature, WotsSignature, WOTS_M31_TOTAL, WOTS_QM31_TOTAL,
 };
 pub use tx::{
     compute_sha_amounts, compute_sha_outputs, compute_sha_prevouts, compute_sha_scriptpubkeys,
@@ -373,4 +375,89 @@ mod tests {
         let res = vm.execute(builder.as_bytes()).expect("Lamport script verification should succeed");
         assert!(res);
     }
+
+    #[test]
+    fn test_wots_m31_state_commitment_op_cat_free() {
+        let seed = [0x99u8; 32];
+        let tag = b"M31_INTERMEDIATE_ROW_42";
+        let (sk, pk) = WotsM31Commitment::keygen(&seed, tag);
+
+        let val: u32 = 1234567890; // 31-bit value
+        let sig = WotsM31Commitment::sign(&sk, val);
+        assert!(WotsM31Commitment::verify(&pk, val, &sig));
+
+        // Verify in pure Bitcoin Script (OP_CAT free!)
+        let mut builder = ScriptBuilder::new();
+        WotsM31Commitment::emit_verifier(&mut builder, &pk, val);
+
+        let witness = WotsM31Commitment::create_witness(&sig);
+        let mut vm = Vm::with_witness(witness);
+        let ok = vm.execute(builder.as_bytes()).expect("M31 WOTS verification failed");
+        assert!(ok);
+        assert_eq!(vm.stack().last().unwrap(), &[1]);
+
+        println!(
+            "Mainnet OP_CAT-Free M31 Commitment: Script Size={} B, Ops={}, Witness Items={}",
+            builder.len(),
+            builder.opcode_count(),
+            sig.preimages.len()
+        );
+    }
+
+    #[test]
+    fn test_wots_qm31_state_commitment_op_cat_free() {
+        let seed = [0xaau8; 32];
+        let tag = b"QM31_OOD_QUOTIENT_STEP";
+        let (sk, pk) = WotsQm31Commitment::keygen(&seed, tag);
+
+        let components = [10001, 20002, 30003, 40004];
+        let sig = WotsQm31Commitment::sign(&sk, components);
+        assert!(WotsQm31Commitment::verify(&pk, components, &sig));
+
+        let mut builder = ScriptBuilder::new();
+        WotsQm31Commitment::emit_verifier(&mut builder, &pk, components);
+
+        let witness = WotsQm31Commitment::create_witness(&sig);
+        let mut vm = Vm::with_witness(witness);
+        let ok = vm.execute(builder.as_bytes()).expect("QM31 WOTS verification failed");
+        assert!(ok);
+        assert_eq!(vm.stack().last().unwrap(), &[1]);
+
+        println!(
+            "Mainnet OP_CAT-Free QM31 Commitment: Script Size={} B, Ops={}",
+            builder.len(),
+            builder.opcode_count()
+        );
+    }
+
+    #[test]
+    fn test_wots_m31_equivocation_slashing() {
+        let seed = [0xbbu8; 32];
+        let tag = b"CONTESTED_STATE_STEP_5";
+        let (sk, pk) = WotsM31Commitment::keygen(&seed, tag);
+
+        let val_a: u32 = 42;
+        let val_b: u32 = 999;
+        let sig_a = WotsM31Commitment::sign(&sk, val_a);
+        let sig_b = WotsM31Commitment::sign(&sk, val_b);
+
+        let equiv = EquivocationProof::detect(val_a, &sig_a, val_b, &sig_b).expect("Equivocation must be detected");
+        assert!(equiv.nibble_index < WOTS_M31_TOTAL);
+
+        let nibbles_a = WotsM31Commitment::value_to_nibbles(val_a);
+        let nibbles_b = WotsM31Commitment::value_to_nibbles(val_b);
+        let na = nibbles_a[equiv.nibble_index];
+        let nb = nibbles_b[equiv.nibble_index];
+
+        let mut builder = ScriptBuilder::new();
+        EquivocationProof::emit_slasher(&mut builder, &pk.public_keys[equiv.nibble_index], na, nb);
+
+        // Witness: [sig_b_nibble, sig_a_nibble]
+        let witness = vec![equiv.sig_b_nibble.to_vec(), equiv.sig_a_nibble.to_vec()];
+        let mut vm = Vm::with_witness(witness);
+        let ok = vm.execute(builder.as_bytes()).expect("Equivocation slashing script failed");
+        assert!(ok);
+        assert_eq!(vm.stack().last().unwrap(), &[1]);
+    }
 }
+
