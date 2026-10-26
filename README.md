@@ -14,8 +14,6 @@
 
 **Native Zero-Knowledge STARK Verifier & Tapscript Compiler for Bitcoin**
 
-*Where `OP_CAT` meets Nakamoto Consensus to verify STARK proofs directly on Bitcoin Layer 1.*
-
 <p>
   <a href="https://crates.io"><img src="https://img.shields.io/badge/crates.io-v0.1.0-orange?style=flat-square" alt="crates.io" /></a>
   <a href="https://github.com/AlphaSparrow/katamoto"><img src="https://img.shields.io/badge/tests-75%2F75%20passing-brightgreen?style=flat-square" alt="tests" /></a>
