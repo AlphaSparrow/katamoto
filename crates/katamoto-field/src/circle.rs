@@ -175,12 +175,14 @@ pub fn circle_subgroup_generator(log_size: usize) -> CirclePoint {
 }
 
 /// Circle Domain of size 2^log_size
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CircleDomain {
     pub log_size: usize,
     pub size: usize,
     pub generator: CirclePoint,
     pub points: Vec<CirclePoint>,
+    pub y_inverses: Vec<M31>,
+    pub x_inverses: Vec<M31>,
 }
 
 impl CircleDomain {
@@ -198,11 +200,14 @@ impl CircleDomain {
             size,
             generator: gen,
             points,
+            y_inverses: Vec::new(),
+            x_inverses: Vec::new(),
         }
     }
 
     /// Coset domain: D = { G_{2N} + j * G_N }
     /// In a coset domain, x != 0 and y != 0 for every point, enabling division-free FFT twiddles!
+    /// Precomputes twiddle inverses using Montgomery batch inversion for zero-inversion FFT loops.
     pub fn coset(log_size: usize) -> Self {
         let size = 1 << log_size;
         let shift = circle_subgroup_generator(log_size + 1);
@@ -213,11 +218,40 @@ impl CircleDomain {
             points.push(curr);
             curr = curr + gen;
         }
+
+        let y_coords: Vec<M31> = points[..size / 2].iter().map(|p| p.y).collect();
+        let y_inverses = M31::batch_inv(&y_coords).unwrap_or_default();
+
+        let x_coords: Vec<M31> = points.iter().map(|p| p.x).collect();
+        let x_inverses = M31::batch_inv(&x_coords).unwrap_or_default();
+
         Self {
             log_size,
             size,
             generator: gen,
             points,
+            y_inverses,
+            x_inverses,
+        }
+    }
+
+    /// Returns the precomputed inverse of point x-coordinate for stage 2 x-butterflies
+    #[inline(always)]
+    pub fn inv_x(&self, idx: usize) -> M31 {
+        if idx < self.x_inverses.len() {
+            self.x_inverses[idx]
+        } else {
+            self.points[idx].x.inv().unwrap_or(M31::ONE)
+        }
+    }
+
+    /// Returns the precomputed inverse of point y-coordinate for stage 1 y-butterflies
+    #[inline(always)]
+    pub fn inv_y(&self, idx: usize) -> M31 {
+        if idx < self.y_inverses.len() {
+            self.y_inverses[idx]
+        } else {
+            self.points[idx].y.inv().expect("Point y must be invertible")
         }
     }
 }

@@ -43,8 +43,7 @@ pub fn circle_fft(evals: &[M31], domain: &CircleDomain) -> Vec<M31> {
     // In CircleDomain::coset, point j and point (n - 1 - j) are conjugates!
     for j in 0..(n / 2) {
         let conj_j = n - 1 - j;
-        let y = domain.points[j].y;
-        let y_inv = y.inv().expect("Domain point y must be non-zero for y-butterfly");
+        let y_inv = domain.inv_y(j);
 
         let v_p = res[j];
         let v_conj = res[conj_j];
@@ -67,8 +66,8 @@ pub fn circle_fft(evals: &[M31], domain: &CircleDomain) -> Vec<M31> {
                 let idx1 = offset + i;
                 let idx2 = offset + half + i;
 
-                let twiddle_x = domain.points[i * num_blocks].x;
-                let x_inv = twiddle_x.inv().unwrap_or(M31::ONE);
+                let pt_idx = i * num_blocks;
+                let x_inv = domain.inv_x(pt_idx);
 
                 let u1 = res[idx1];
                 let u2 = res[idx2];
