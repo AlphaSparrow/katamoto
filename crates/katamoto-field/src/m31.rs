@@ -31,6 +31,15 @@ impl M31 {
         Some(self.pow(M31_P as u64 - 2))
     }
 
+    /// Fast squaring: a^2 mod (2^31 - 1)
+    #[inline(always)]
+    pub fn sqr(self) -> Self {
+        let prod = (self.0 as u64) * (self.0 as u64);
+        let res = (prod & (M31_P as u64)) + (prod >> 31);
+        let res2 = (res & (M31_P as u64)) + (res >> 31);
+        M31((if res2 >= M31_P as u64 { res2 - M31_P as u64 } else { res2 }) as u32)
+    }
+
     pub fn pow(self, mut exp: u64) -> Self {
         let mut base = self;
         let mut res = M31::ONE;
@@ -38,10 +47,50 @@ impl M31 {
             if exp % 2 == 1 {
                 res = res * base;
             }
-            base = base * base;
+            base = base.sqr();
             exp /= 2;
         }
         res
+    }
+
+    /// Montgomery's batch inversion algorithm.
+    /// Inverts an entire slice of non-zero M31 elements using a single field inversion
+    /// and 3*(n-1) field multiplications in O(n) total time.
+    /// Returns None if any element in `src` is zero.
+    pub fn batch_inv(src: &[M31]) -> Option<Vec<M31>> {
+        if src.is_empty() {
+            return Some(Vec::new());
+        }
+        let n = src.len();
+        let mut prefixes = Vec::with_capacity(n);
+        let mut acc = M31::ONE;
+        for &x in src {
+            if x.0 == 0 {
+                return None;
+            }
+            acc = acc * x;
+            prefixes.push(acc);
+        }
+
+        let mut inv = acc.inv()?;
+        let mut result = vec![M31::ZERO; n];
+        for i in (1..n).rev() {
+            result[i] = prefixes[i - 1] * inv;
+            inv = inv * src[i];
+        }
+        result[0] = inv;
+        Some(result)
+    }
+
+    /// In-place batch inversion of a slice of M31 elements.
+    /// Returns false if any element is zero.
+    pub fn batch_inv_in_place(items: &mut [M31]) -> bool {
+        if let Some(invs) = Self::batch_inv(items) {
+            items.copy_from_slice(&invs);
+            true
+        } else {
+            false
+        }
     }
 
     /// Decomposes the field element into 31 binary bits (LSB first: bit_0, bit_1, ..., bit_30)

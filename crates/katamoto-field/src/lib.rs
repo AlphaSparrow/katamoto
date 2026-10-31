@@ -271,4 +271,63 @@ mod tests {
         assert_eq!(qa[0], QM31::from_u32(11, 12, 13, 14));
         assert_eq!(qa[1], QM31::from_u32(25, 26, 27, 28));
     }
+
+    #[test]
+    fn test_m31_fast_squaring_and_batch_inversion() {
+        // Fast squaring correctness
+        for v in [0, 1, 2, 7, 1024, 65537, 2147483645, 2147483646] {
+            let elem = M31::new(v);
+            assert_eq!(elem.sqr(), elem * elem, "Squaring failed for {}", v);
+        }
+
+        // Montgomery batch inversion
+        let elems: Vec<M31> = (1..=100).map(|i| M31::new(i * 1337)).collect();
+        let invs = M31::batch_inv(&elems).expect("All non-zero elements must be invertible");
+        assert_eq!(invs.len(), elems.len());
+        for (x, inv_x) in elems.iter().zip(invs.iter()) {
+            assert_eq!(*x * *inv_x, M31::ONE);
+            assert_eq!(Some(*inv_x), x.inv());
+        }
+
+        // In-place batch inversion
+        let mut in_place_elems = elems.clone();
+        assert!(M31::batch_inv_in_place(&mut in_place_elems));
+        assert_eq!(in_place_elems, invs);
+
+        // Zero element error handling
+        let with_zero = vec![M31::new(5), M31::ZERO, M31::new(10)];
+        assert!(M31::batch_inv(&with_zero).is_none());
+        assert!(!M31::batch_inv_in_place(&mut with_zero.clone()));
+    }
+
+    #[test]
+    fn test_qm31_fast_squaring_and_batch_inversion() {
+        // Fast squaring in CM31 and QM31
+        let q = QM31::from_u32(11, 22, 33, 44);
+        assert_eq!(q.sqr(), q * q);
+        assert_eq!(q.c0.sqr(), q.c0 * q.c0);
+        assert_eq!(q.c1.sqr(), q.c1 * q.c1);
+
+        // Montgomery batch inversion in QM31
+        let q_elems = vec![
+            QM31::from_u32(1, 2, 3, 4),
+            QM31::from_u32(100, 200, 300, 400),
+            QM31::from_u32(1337, 7331, 42, 999),
+            QM31::from_u32(2147483640, 2147483641, 1, 2),
+        ];
+        let q_invs = QM31::batch_inv(&q_elems).expect("Batch inv failed");
+        for (orig, inv) in q_elems.iter().zip(q_invs.iter()) {
+            assert_eq!(*orig * *inv, QM31::ONE);
+            assert_eq!(Some(*inv), orig.inv());
+        }
+
+        // In-place batch inversion
+        let mut q_in_place = q_elems.clone();
+        assert!(QM31::batch_inv_in_place(&mut q_in_place));
+        assert_eq!(q_in_place, q_invs);
+
+        // Zero element error handling
+        let q_zero = vec![QM31::from_u32(1, 2, 3, 4), QM31::ZERO];
+        assert!(QM31::batch_inv(&q_zero).is_none());
+    }
 }

@@ -31,6 +31,18 @@ impl CM31 {
         (self.a * self.a) + (self.b * self.b)
     }
 
+    /// Fast squaring in CM31: (a + bi)^2 = (a^2 - b^2) + 2abi
+    #[inline(always)]
+    pub fn sqr(self) -> Self {
+        let a_sq = self.a.sqr();
+        let b_sq = self.b.sqr();
+        let ab = self.a * self.b;
+        Self {
+            a: a_sq - b_sq,
+            b: ab + ab,
+        }
+    }
+
     /// Multiplicative inverse: (a - b*i) / (a^2 + b^2)
     pub fn inv(self) -> Option<Self> {
         let n = self.norm();
@@ -124,14 +136,26 @@ impl QM31 {
     /// Multiplicative inverse in QM31:
     /// (c0 + c1*j)^-1 = (c0 - c1*j) / (c0^2 - c1^2 * (2+i))
     pub fn inv(self) -> Option<Self> {
-        let c0_sq = self.c0 * self.c0;
-        let c1_sq = self.c1 * self.c1;
+        let c0_sq = self.c0.sqr();
+        let c1_sq = self.c1.sqr();
         let denom = c0_sq - Self::mul_by_generator(c1_sq);
         let denom_inv = denom.inv()?;
         Some(Self {
             c0: self.c0 * denom_inv,
             c1: -self.c1 * denom_inv,
         })
+    }
+
+    /// Fast squaring in QM31: (c0 + c1*j)^2 = (c0^2 + c1^2*(2+i)) + 2*c0*c1*j
+    #[inline(always)]
+    pub fn sqr(self) -> Self {
+        let c0_sq = self.c0.sqr();
+        let c1_sq = self.c1.sqr();
+        let c01 = self.c0 * self.c1;
+        Self {
+            c0: c0_sq + Self::mul_by_generator(c1_sq),
+            c1: c01 + c01,
+        }
     }
 
     pub fn pow(self, mut exp: u64) -> Self {
@@ -141,10 +165,60 @@ impl QM31 {
             if exp % 2 == 1 {
                 res = res * base;
             }
-            base = base * base;
+            base = base.sqr();
             exp /= 2;
         }
         res
+    }
+
+    /// Montgomery batch inversion for QM31 elements:
+    /// Inverts an entire slice of QM31 elements using only a single M31 field inversion!
+    /// Returns None if any element in `src` is non-invertible (zero).
+    pub fn batch_inv(src: &[QM31]) -> Option<Vec<QM31>> {
+        if src.is_empty() {
+            return Some(Vec::new());
+        }
+        let n = src.len();
+        let mut denoms = Vec::with_capacity(n);
+        let mut norms = Vec::with_capacity(n);
+
+        for x in src {
+            let c0_sq = x.c0.sqr();
+            let c1_sq = x.c1.sqr();
+            let denom = c0_sq - Self::mul_by_generator(c1_sq);
+            let norm = denom.norm();
+            if norm.0 == 0 {
+                return None;
+            }
+            denoms.push(denom);
+            norms.push(norm);
+        }
+
+        let inv_norms = M31::batch_inv(&norms)?;
+        let mut result = Vec::with_capacity(n);
+        for (i, x) in src.iter().enumerate() {
+            let denom = denoms[i];
+            let inv_n = inv_norms[i];
+            let denom_inv = CM31 {
+                a: denom.a * inv_n,
+                b: -denom.b * inv_n,
+            };
+            result.push(QM31 {
+                c0: x.c0 * denom_inv,
+                c1: -x.c1 * denom_inv,
+            });
+        }
+        Some(result)
+    }
+
+    /// In-place Montgomery batch inversion for QM31 elements.
+    pub fn batch_inv_in_place(items: &mut [QM31]) -> bool {
+        if let Some(invs) = Self::batch_inv(items) {
+            items.copy_from_slice(&invs);
+            true
+        } else {
+            false
+        }
     }
 
     /// As an array of 4 M31 elements: [c0.a, c0.b, c1.a, c1.b]
