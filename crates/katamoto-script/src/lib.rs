@@ -249,6 +249,46 @@ mod tests {
     }
 
     #[test]
+    fn test_script_optimizer_advanced_constant_folding() {
+        let mut builder = ScriptBuilder::new();
+        builder.push_int(10);
+        builder.push_int(20);
+
+        // OP_OVER OP_OVER => OP_2DUP
+        builder.op_over();
+        builder.op_over();
+
+        // Push 0 + OP_ADD => identity eliminated
+        builder.push_int(0);
+        builder.op_add();
+
+        // Push 1 + OP_ADD => OP_1ADD
+        builder.push_int(1);
+        builder.op_add();
+
+        // Push 0 + OP_EQUAL => OP_NOT
+        builder.push_int(0);
+        builder.op_equal();
+
+        // OP_NOT OP_NOT => OP_0NOTEQUAL
+        builder.op_not();
+        builder.op_not();
+
+        // Push 1 so stack evaluates to true
+        builder.op_drop();
+        builder.push_int(1);
+
+        let (opt, report) = builder.optimize();
+        assert!(report.stack_identities_applied >= 1);
+        assert!(report.constant_folds_applied >= 3);
+        assert!(opt.len() < builder.len());
+
+        let mut vm = Vm::new();
+        let res = vm.execute(opt.as_bytes()).unwrap();
+        assert!(res);
+    }
+
+    #[test]
     fn test_vm_watermark_profiler_and_limits() {
         let mut builder = ScriptBuilder::new();
         for _ in 0..50 {

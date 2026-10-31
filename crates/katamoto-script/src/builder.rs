@@ -285,6 +285,24 @@ pub struct OptimizationReport {
     pub dup_drops_removed: usize,
     pub nops_removed: usize,
     pub arithmetic_cancels_removed: usize,
+    pub stack_identities_applied: usize,
+    pub constant_folds_applied: usize,
+}
+
+fn is_push_zero(op: &ScriptOp) -> bool {
+    match op {
+        ScriptOp::Push(data) => data.is_empty() || data.iter().all(|&b| b == 0),
+        ScriptOp::Op(Opcode::Op0) => true,
+        _ => false,
+    }
+}
+
+fn is_push_one(op: &ScriptOp) -> bool {
+    match op {
+        ScriptOp::Push(data) => data == &[1],
+        ScriptOp::Op(Opcode::Op1) => true,
+        _ => false,
+    }
 }
 
 /// Multi-pass Peephole Optimizer for Bitcoin Tapscript
@@ -339,10 +357,81 @@ impl ScriptOptimizer {
                             changed = true;
                             continue;
                         }
+                        // OP_OVER OP_OVER => OP_2DUP
+                        (ScriptOp::Op(Opcode::OpOver), ScriptOp::Op(Opcode::OpOver)) => {
+                            report.stack_identities_applied += 1;
+                            next_ir.push(ScriptOp::Op(Opcode::Op2Dup));
+                            i += 2;
+                            changed = true;
+                            continue;
+                        }
+                        // OP_DROP OP_DROP => OP_2DROP
+                        (ScriptOp::Op(Opcode::OpDrop), ScriptOp::Op(Opcode::OpDrop)) => {
+                            report.stack_identities_applied += 1;
+                            next_ir.push(ScriptOp::Op(Opcode::Op2Drop));
+                            i += 2;
+                            changed = true;
+                            continue;
+                        }
+                        // OP_2DUP followed immediately by OP_2DROP
+                        (ScriptOp::Op(Opcode::Op2Dup), ScriptOp::Op(Opcode::Op2Drop)) => {
+                            report.dup_drops_removed += 1;
+                            i += 2;
+                            changed = true;
+                            continue;
+                        }
                         // OP_1ADD followed by OP_1SUB or vice versa
                         (ScriptOp::Op(Opcode::Op1Add), ScriptOp::Op(Opcode::Op1Sub))
                         | (ScriptOp::Op(Opcode::Op1Sub), ScriptOp::Op(Opcode::Op1Add)) => {
                             report.arithmetic_cancels_removed += 1;
+                            i += 2;
+                            changed = true;
+                            continue;
+                        }
+                        // Push 0 + OP_ADD => identity, eliminated
+                        (op, ScriptOp::Op(Opcode::OpAdd)) if is_push_zero(op) => {
+                            report.constant_folds_applied += 1;
+                            i += 2;
+                            changed = true;
+                            continue;
+                        }
+                        // Push 0 + OP_SUB => identity, eliminated
+                        (op, ScriptOp::Op(Opcode::OpSub)) if is_push_zero(op) => {
+                            report.constant_folds_applied += 1;
+                            i += 2;
+                            changed = true;
+                            continue;
+                        }
+                        // Push 1 + OP_ADD => OP_1ADD
+                        (op, ScriptOp::Op(Opcode::OpAdd)) if is_push_one(op) => {
+                            report.constant_folds_applied += 1;
+                            next_ir.push(ScriptOp::Op(Opcode::Op1Add));
+                            i += 2;
+                            changed = true;
+                            continue;
+                        }
+                        // Push 1 + OP_SUB => OP_1SUB
+                        (op, ScriptOp::Op(Opcode::OpSub)) if is_push_one(op) => {
+                            report.constant_folds_applied += 1;
+                            next_ir.push(ScriptOp::Op(Opcode::Op1Sub));
+                            i += 2;
+                            changed = true;
+                            continue;
+                        }
+                        // Push 0 + OP_EQUAL / OP_NUMEQUAL => OP_NOT
+                        (op, ScriptOp::Op(Opcode::OpEqual)) | (op, ScriptOp::Op(Opcode::OpNumEqual))
+                            if is_push_zero(op) =>
+                        {
+                            report.constant_folds_applied += 1;
+                            next_ir.push(ScriptOp::Op(Opcode::OpNot));
+                            i += 2;
+                            changed = true;
+                            continue;
+                        }
+                        // OP_NOT OP_NOT => OP_0NOTEQUAL
+                        (ScriptOp::Op(Opcode::OpNot), ScriptOp::Op(Opcode::OpNot)) => {
+                            report.constant_folds_applied += 1;
+                            next_ir.push(ScriptOp::Op(Opcode::Op0NotEqual));
                             i += 2;
                             changed = true;
                             continue;
