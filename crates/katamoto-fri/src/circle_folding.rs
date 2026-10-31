@@ -1,5 +1,8 @@
 use crate::merkle::{MerkleProof, MerkleScript};
-use katamoto_field::{circle::CirclePoint, M31Script, M31};
+use katamoto_field::{
+    circle::{circle_subgroup_generator, CirclePoint},
+    M31Script, M31,
+};
 use katamoto_script::{builder::encode_num, ScriptBuilder};
 
 /// Stage 1 of Circle FRI: y-folding over conjugate pair (x, y) and (x, -y)
@@ -222,6 +225,33 @@ impl CircleFriScript {
         }
         witness
     }
+
+    /// Emits script verifying a 16-to-1 high-arity Circle folding step:
+    /// Checks 15 colinearities sequentially across 4 folding layers:
+    ///   - 8 y-folds
+    ///   - 4 x-folds
+    ///   - 2 pi-folds
+    ///   - 1 pi^2-fold combining down to pi(pi(pi(x)))
+    /// Stack layout: 15 consecutive `[lhs, t1, t2]` triples
+    pub fn emit_16to1_colinearity_verifier(builder: &mut ScriptBuilder) {
+        for _ in 0..15 {
+            M31Script::emit_add(builder);
+            builder.op_equalverify();
+        }
+        builder.push_int(1);
+    }
+
+    /// Prepares witness for 16-to-1 high-arity Circle FRI folding
+    pub fn create_16to1_witness(step: &CircleFri16To1Step) -> Vec<Vec<u8>> {
+        let triples = step.decompose();
+        let mut witness = Vec::with_capacity(45);
+        for triple in triples.iter().rev() {
+            witness.push(encode_num(triple.0.as_i64()));
+            witness.push(encode_num(triple.1.as_i64()));
+            witness.push(encode_num(triple.2.as_i64()));
+        }
+        witness
+    }
 }
 
 /// Stage 1 & 2 Combined: 4-to-1 High-Arity Circle FRI Folding Step.
@@ -411,6 +441,89 @@ impl CircleFri8To1Step {
     }
 }
 
+/// Stage 1, 2, 3, & 4 Combined: 16-to-1 High-Arity Circle FRI Folding Step.
+/// Folds 16 sibling evaluations across 4 domain halvings into a single folded value
+/// at pi(pi(pi(x))) within a single TapLeaf, eliminating THREE intermediate Merkle trees (75% reduction).
+#[derive(Debug, Clone)]
+pub struct CircleFri16To1Step {
+    pub step8_a: CircleFri8To1Step,
+    pub step8_b: CircleFri8To1Step,
+    pub alpha_pi2: M31,
+    pub pi2_x_a: M31,
+    pub next3_f: M31,
+}
+
+impl CircleFri16To1Step {
+    pub fn new(
+        point_a: CirclePoint,
+        vals_a: [M31; 8],
+        vals_b: [M31; 8],
+        alpha_y: M31,
+        alpha_x: M31,
+        alpha_pi: M31,
+        alpha_pi2: M31,
+    ) -> Self {
+        assert!(point_a.is_on_curve(), "Point A must lie on circle");
+        // Point B on circle shifted by G_8 so that pi(pi(x_b)) = -pi(pi(x_a))
+        let g8 = circle_subgroup_generator(3);
+        let point_b = point_a + g8;
+        assert!(point_b.is_on_curve(), "Point B must lie on circle");
+
+        let mut v_a1 = [M31::ZERO; 4];
+        let mut v_a2 = [M31::ZERO; 4];
+        v_a1.copy_from_slice(&vals_a[0..4]);
+        v_a2.copy_from_slice(&vals_a[4..8]);
+
+        let mut v_b1 = [M31::ZERO; 4];
+        let mut v_b2 = [M31::ZERO; 4];
+        v_b1.copy_from_slice(&vals_b[0..4]);
+        v_b2.copy_from_slice(&vals_b[4..8]);
+
+        let step8_a = CircleFri8To1Step::new(point_a, v_a1, v_a2, alpha_y, alpha_x, alpha_pi);
+        let step8_b = CircleFri8To1Step::new(point_b, v_b1, v_b2, alpha_y, alpha_x, alpha_pi);
+
+        let two = M31::new(2);
+        let pi2_x_a = (two * step8_a.pi_x_a * step8_a.pi_x_a) - M31::ONE;
+        assert_ne!(pi2_x_a, M31::ZERO, "pi2(x_a) cannot be zero for pi2-fold");
+
+        let two_inv = two.inv().unwrap();
+        let pi2_inv = pi2_x_a.inv().unwrap();
+
+        let even_pi2 = (step8_a.next_next_f + step8_b.next_next_f) * two_inv;
+        let odd_pi2 = (step8_a.next_next_f - step8_b.next_next_f) * two_inv * pi2_inv;
+        let next3_f = even_pi2 + (alpha_pi2 * odd_pi2);
+
+        Self {
+            step8_a,
+            step8_b,
+            alpha_pi2,
+            pi2_x_a,
+            next3_f,
+        }
+    }
+
+    /// Decomposes 16-to-1 folding into 15 linear colinearity triples:
+    ///   - 7 for step8_a
+    ///   - 7 for step8_b
+    ///   - 1 for final pi2-folding stage
+    pub fn decompose(&self) -> [(M31, M31, M31); 15] {
+        let dec_a = self.step8_a.decompose();
+        let dec_b = self.step8_b.decompose();
+
+        let two_pi2 = M31::new(2) * self.pi2_x_a;
+        let lhs_pi2 = two_pi2 * self.next3_f;
+        let t1_pi2 = self.pi2_x_a * (self.step8_a.next_next_f + self.step8_b.next_next_f);
+        let t2_pi2 = self.alpha_pi2 * (self.step8_a.next_next_f - self.step8_b.next_next_f);
+        debug_assert_eq!(lhs_pi2, t1_pi2 + t2_pi2, "16-to-1 pi2 colinearity must hold");
+
+        [
+            dec_a[0], dec_a[1], dec_a[2], dec_a[3], dec_a[4], dec_a[5], dec_a[6],
+            dec_b[0], dec_b[1], dec_b[2], dec_b[3], dec_b[4], dec_b[5], dec_b[6],
+            (lhs_pi2, t1_pi2, t2_pi2),
+        ]
+    }
+}
+
 /// Witness packing utilities for High-Arity Circle FRI folding
 #[derive(Debug, Clone)]
 pub struct PackedCircleFriWitness;
@@ -429,6 +542,15 @@ impl PackedCircleFriWitness {
     /// Packs 8 M31 sibling values into a compact 32-byte byte vector
     pub fn pack_8_siblings(vals: &[M31; 8]) -> [u8; 32] {
         let mut buf = [0u8; 32];
+        for (i, v) in vals.iter().enumerate() {
+            buf[i * 4..(i + 1) * 4].copy_from_slice(&v.value().to_le_bytes());
+        }
+        buf
+    }
+
+    /// Packs 16 M31 sibling values into a compact 64-byte byte vector
+    pub fn pack_16_siblings(vals: &[M31; 16]) -> [u8; 64] {
+        let mut buf = [0u8; 64];
         for (i, v) in vals.iter().enumerate() {
             buf[i * 4..(i + 1) * 4].copy_from_slice(&v.value().to_le_bytes());
         }

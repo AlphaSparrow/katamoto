@@ -10,8 +10,8 @@ pub use batch_merkle::{
     BatchMerkleScript, BatchMerkleTree, MixedBatchMerkleScript, MixedBatchMerkleTree, MixedColumn,
 };
 pub use circle_folding::{
-    CircleFri4To1Step, CircleFri8To1Step, CircleFriRoundQuery, CircleFriScript, CircleFriXStep,
-    CircleFriYStep, PackedCircleFriWitness,
+    CircleFri16To1Step, CircleFri4To1Step, CircleFri8To1Step, CircleFriRoundQuery,
+    CircleFriScript, CircleFriXStep, CircleFriYStep, PackedCircleFriWitness,
 };
 pub use folding::{FriQueryStep, FriRoundQuery, FriScript};
 pub use merkle::{hash_node, MerkleProof, MerkleScript, MerkleTree};
@@ -509,6 +509,62 @@ mod tests {
 
         println!(
             "High-Arity 8-to-1 Fold Verified: Script Size={} B, Opcodes={}, Stack Depth={} (Intermediate Merkle Roots Saved: 2)",
+            builder.len(),
+            builder.opcode_count(),
+            vm.stats().max_stack_depth
+        );
+    }
+
+    #[test]
+    fn test_high_arity_16to1_circle_folding_with_witness_packing() {
+        use katamoto_field::circle::circle_subgroup_generator;
+        use katamoto_field::M31;
+
+        // Subgroup generator of order 64 ensures non-zero denominators for 4-layer folding
+        let gen = circle_subgroup_generator(6);
+        let point_a = gen;
+
+        let vals_a = [
+            M31::new(10), M31::new(20), M31::new(30), M31::new(40),
+            M31::new(50), M31::new(60), M31::new(70), M31::new(80),
+        ];
+        let vals_b = [
+            M31::new(15), M31::new(25), M31::new(35), M31::new(45),
+            M31::new(55), M31::new(65), M31::new(75), M31::new(85),
+        ];
+
+        let mut all_16 = [M31::ZERO; 16];
+        all_16[..8].copy_from_slice(&vals_a);
+        all_16[8..].copy_from_slice(&vals_b);
+        let packed_16 = PackedCircleFriWitness::pack_16_siblings(&all_16);
+        assert_eq!(packed_16.len(), 64);
+
+        let alpha_y = M31::new(13);
+        let alpha_x = M31::new(29);
+        let alpha_pi = M31::new(47);
+        let alpha_pi2 = M31::new(71);
+
+        let step_16to1 = CircleFri16To1Step::new(
+            point_a, vals_a, vals_b, alpha_y, alpha_x, alpha_pi, alpha_pi2,
+        );
+        let triples = step_16to1.decompose();
+        assert_eq!(triples.len(), 15);
+        for (i, t) in triples.iter().enumerate() {
+            assert_eq!(t.0, t.1 + t.2, "16-to-1 Triple {} failed", i);
+        }
+
+        // Verify in Bitcoin Script VM
+        let mut builder = ScriptBuilder::new();
+        CircleFriScript::emit_16to1_colinearity_verifier(&mut builder);
+        let witness = CircleFriScript::create_16to1_witness(&step_16to1);
+
+        let mut vm = Vm::with_witness(witness);
+        let ok = vm.execute(builder.as_bytes()).expect("16-to-1 verification failed");
+        assert!(ok);
+        assert_eq!(vm.stack().last().unwrap(), &[1]);
+
+        println!(
+            "High-Arity 16-to-1 Fold Verified: Script Size={} B, Opcodes={}, Stack Depth={} (Intermediate Merkle Roots Saved: 3 / 75% reduction)",
             builder.len(),
             builder.opcode_count(),
             vm.stats().max_stack_depth
