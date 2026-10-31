@@ -198,3 +198,46 @@ fn test_cli_high_arity_fri_security_presets() {
     let selected = cfg.unwrap();
     assert!(selected.folding_arity >= 8, "Selected arity should be high-arity (>= 8)");
 }
+
+#[test]
+fn test_cli_benchmarks_and_folding_telemetry() {
+    use katamoto_field::{m31::M31, qm31::QM31};
+    use katamoto_fri::circle_folding::CircleFriScript;
+    use katamoto_script::ScriptBuilder;
+
+    // Verify M31 batch inversion matches sequential inversion
+    let items: Vec<M31> = (1..=128).map(|i| M31::new(i * 1000 + 3)).collect();
+    let batch_invs = M31::batch_inv(&items).expect("Batch inv failed");
+    for (orig, inv) in items.iter().zip(batch_invs.iter()) {
+        assert_eq!(*orig * *inv, M31::ONE);
+    }
+
+    // Verify QM31 batch inversion
+    let qm_items: Vec<QM31> = (1..=32)
+        .map(|i| QM31::from_u32(i * 10, i * 20, i * 30, i * 40))
+        .collect();
+    let qm_invs = QM31::batch_inv(&qm_items).expect("QM31 batch inv failed");
+    for (orig, inv) in qm_items.iter().zip(qm_invs.iter()) {
+        assert_eq!(*orig * *inv, QM31::ONE);
+    }
+
+    // Verify high-arity folding script byte bounds
+    let mut b2 = ScriptBuilder::new();
+    CircleFriScript::emit_colinearity_verifier(&mut b2);
+    let mut b4 = ScriptBuilder::new();
+    CircleFriScript::emit_4to1_colinearity_verifier(&mut b4);
+    let mut b8 = ScriptBuilder::new();
+    CircleFriScript::emit_8to1_colinearity_verifier(&mut b8);
+    let mut b16 = ScriptBuilder::new();
+    CircleFriScript::emit_16to1_colinearity_verifier(&mut b16);
+
+    let len2 = b2.as_bytes().len();
+    let len4 = b4.as_bytes().len();
+    let len8 = b8.as_bytes().len();
+    let len16 = b16.as_bytes().len();
+
+    assert!(len2 < len4);
+    assert!(len4 < len8);
+    assert!(len8 < len16);
+    assert!(len16 <= 520, "16-to-1 script must satisfy consensus limit");
+}
