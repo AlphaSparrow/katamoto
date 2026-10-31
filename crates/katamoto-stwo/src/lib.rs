@@ -18,7 +18,8 @@ pub use compiler::{
 };
 pub use proof::{StwoFriProof, StwoFriQuery, StwoOodEvaluations, StwoProof, StwoProofError};
 pub use recursive_verifier::{
-    CanonicalRecursiveProof, CanonicalRecursiveTapTree, RecursiveVerifierConfig,
+    AggregatedRecursiveProof, CanonicalRecursiveProof, CanonicalRecursiveTapTree,
+    CompressedCanonicalTapTree, RecursiveVerifierConfig,
 };
 pub use riscv::{RiscvOpcode, RiscvScript, RiscvStatement, RiscvStep};
 
@@ -645,6 +646,74 @@ mod tests {
                 panic!("Epoch dispute spend '{}' failed: {:?}", spend.leaf_name, e)
             });
             assert!(ok);
+            assert_eq!(vm.stack().last().unwrap(), &[1]);
+        }
+    }
+
+    #[test]
+    fn test_aggregated_recursive_proof_and_compressed_taptree() {
+        // Construct 4 application statements
+        let stmt0 = RiscvStatement {
+            initial_pc: 0x1000,
+            final_pc: 0x1020,
+            cycle_count: 8,
+            initial_state_root: [0x11; 32],
+            final_state_root: [0x12; 32],
+            program_digest: [0x13; 32],
+        };
+        let stmt1 = RiscvStatement {
+            initial_pc: 0x2000,
+            final_pc: 0x2040,
+            cycle_count: 16,
+            initial_state_root: [0x21; 32],
+            final_state_root: [0x22; 32],
+            program_digest: [0x23; 32],
+        };
+        let stmt2 = RiscvStatement {
+            initial_pc: 0x3000,
+            final_pc: 0x3060,
+            cycle_count: 24,
+            initial_state_root: [0x31; 32],
+            final_state_root: [0x32; 32],
+            program_digest: [0x33; 32],
+        };
+        let stmt3 = RiscvStatement {
+            initial_pc: 0x4000,
+            final_pc: 0x4080,
+            cycle_count: 32,
+            initial_state_root: [0x41; 32],
+            final_state_root: [0x42; 32],
+            program_digest: [0x43; 32],
+        };
+
+        let aggregated = AggregatedRecursiveProof::aggregate(vec![stmt0, stmt1, stmt2, stmt3]);
+        assert_eq!(aggregated.inner_statements.len(), 4);
+
+        // 1. Compile 8-leaf Canonical TapTree with aggregated statement inclusion
+        let (tree_8, spends_8) = CanonicalRecursiveTapTree::compile_aggregated(&aggregated, 5, 2);
+        assert_eq!(tree_8.leaves.len(), 8);
+        assert_eq!(spends_8.len(), 8);
+
+        for spend in &spends_8 {
+            let mut vm = Vm::with_witness(spend.witness_items.clone());
+            let ok = vm.execute(&spend.leaf_script).unwrap_or_else(|e| {
+                panic!("8-leaf spend '{}' failed: {:?}", spend.leaf_name, e)
+            });
+            assert!(ok, "Leaf '{}' failed", spend.leaf_name);
+            assert_eq!(vm.stack().last().unwrap(), &[1]);
+        }
+
+        // 2. Compile 4-leaf Compressed TapTree (depth 2) with aggregated statement inclusion
+        let (tree_4, spends_4) = CompressedCanonicalTapTree::compile(&aggregated, 5, 2);
+        assert_eq!(tree_4.leaves.len(), 4);
+        assert_eq!(spends_4.len(), 4);
+
+        for spend in &spends_4 {
+            let mut vm = Vm::with_witness(spend.witness_items.clone());
+            let ok = vm.execute(&spend.leaf_script).unwrap_or_else(|e| {
+                panic!("4-leaf compressed spend '{}' failed: {:?}", spend.leaf_name, e)
+            });
+            assert!(ok, "Compressed leaf '{}' failed", spend.leaf_name);
             assert_eq!(vm.stack().last().unwrap(), &[1]);
         }
     }
