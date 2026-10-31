@@ -511,3 +511,87 @@ impl EquivocationProof {
     }
 }
 
+/// Chained State Transition Commitment for BitVM dispute games.
+/// Binds consecutive state representations (S_t, S_{t+1}) using two Winternitz OTS keys,
+/// enabling trustless on-chain dispute refereeing on Bitcoin mainnet without OP_CAT.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WotsStateTransitionCommitment {
+    pub pre_pk: WotsM31PublicKey,
+    pub post_pk: WotsM31PublicKey,
+    pub step_index: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WotsStateTransitionSignature {
+    pub pre_sig: WotsM31Signature,
+    pub post_sig: WotsM31Signature,
+}
+
+impl WotsStateTransitionCommitment {
+    /// Generates keypair for a contiguous state transition (pre_state -> post_state)
+    pub fn keygen(
+        master_seed: &[u8; 32],
+        step_index: u32,
+    ) -> (
+        (WotsM31PrivateKey, WotsM31PrivateKey),
+        Self,
+    ) {
+        let tag_pre = format!("STATE_TRANSITION_{}_PRE", step_index);
+        let tag_post = format!("STATE_TRANSITION_{}_POST", step_index);
+        let (sk_pre, pk_pre) = WotsM31Commitment::keygen(master_seed, tag_pre.as_bytes());
+        let (sk_post, pk_post) = WotsM31Commitment::keygen(master_seed, tag_post.as_bytes());
+
+        (
+            (sk_pre, sk_post),
+            Self {
+                pre_pk: pk_pre,
+                post_pk: pk_post,
+                step_index,
+            },
+        )
+    }
+
+    /// Signs both pre-state and post-state to commit to a step transition
+    pub fn sign(
+        sks: &(WotsM31PrivateKey, WotsM31PrivateKey),
+        pre_val: u32,
+        post_val: u32,
+    ) -> WotsStateTransitionSignature {
+        let pre_sig = WotsM31Commitment::sign(&sks.0, pre_val);
+        let post_sig = WotsM31Commitment::sign(&sks.1, post_val);
+        WotsStateTransitionSignature { pre_sig, post_sig }
+    }
+
+    /// Verifies that both pre-state and post-state commitments are authentic
+    pub fn verify(
+        &self,
+        pre_val: u32,
+        post_val: u32,
+        sig: &WotsStateTransitionSignature,
+    ) -> bool {
+        WotsM31Commitment::verify(&self.pre_pk, pre_val, &sig.pre_sig)
+            && WotsM31Commitment::verify(&self.post_pk, post_val, &sig.post_sig)
+    }
+
+    /// Emits script that verifies both pre and post commitments on Bitcoin Script
+    pub fn emit_verifier(
+        builder: &mut ScriptBuilder,
+        pk: &WotsStateTransitionCommitment,
+        pre_val: u32,
+        post_val: u32,
+    ) {
+        // Stack layout on entry: `[post_sig_items..., pre_sig_items...]`
+        WotsM31Commitment::emit_verifier(builder, &pk.pre_pk, pre_val);
+        builder.op_verify();
+        WotsM31Commitment::emit_verifier(builder, &pk.post_pk, post_val);
+    }
+
+    /// Creates combined witness for the state transition verification script
+    pub fn create_witness(sig: &WotsStateTransitionSignature) -> Vec<Vec<u8>> {
+        let mut witness = WotsM31Commitment::create_witness(&sig.post_sig);
+        let pre_witness = WotsM31Commitment::create_witness(&sig.pre_sig);
+        witness.extend(pre_witness);
+        witness
+    }
+}
+

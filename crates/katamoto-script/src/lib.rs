@@ -16,7 +16,8 @@ pub use ots::{
     EquivocationProof, LamportOTS, LamportPrivateKey, LamportPublicKey, LamportSignature,
     WinternitzOTS, WotsM31Commitment, WotsM31PrivateKey, WotsM31PublicKey, WotsM31Signature,
     WotsPrivateKey, WotsPublicKey, WotsQm31Commitment, WotsQm31PrivateKey, WotsQm31PublicKey,
-    WotsQm31Signature, WotsSignature, WOTS_M31_TOTAL, WOTS_QM31_TOTAL,
+    WotsQm31Signature, WotsSignature, WotsStateTransitionCommitment, WotsStateTransitionSignature,
+    WOTS_M31_TOTAL, WOTS_QM31_TOTAL,
 };
 pub use tx::{
     compute_sha_amounts, compute_sha_outputs, compute_sha_prevouts, compute_sha_scriptpubkeys,
@@ -548,6 +549,32 @@ mod tests {
             rescue_tx.txid(),
             rescue_tx.vsize()
         );
+    }
+
+    #[test]
+    fn test_wots_state_transition_commitment_roundtrip() {
+        let seed = [0x77u8; 32];
+        let step = 42;
+        let (sks, comm) = WotsStateTransitionCommitment::keygen(&seed, step);
+
+        let pre_state = 100u32;
+        let post_state = 200u32;
+        let sig = WotsStateTransitionCommitment::sign(&sks, pre_state, post_state);
+
+        // Native Rust verification
+        assert!(comm.verify(pre_state, post_state, &sig));
+        assert!(!comm.verify(pre_state + 1, post_state, &sig));
+        assert!(!comm.verify(pre_state, post_state + 1, &sig));
+
+        // Bitcoin Script execution
+        let mut builder = ScriptBuilder::new();
+        WotsStateTransitionCommitment::emit_verifier(&mut builder, &comm, pre_state, post_state);
+
+        let witness = WotsStateTransitionCommitment::create_witness(&sig);
+        let mut vm = Vm::with_witness(witness);
+        let ok = vm.execute(builder.as_bytes()).expect("State transition script failed");
+        assert!(ok);
+        assert_eq!(vm.stack().last().unwrap(), &[1]);
     }
 }
 
