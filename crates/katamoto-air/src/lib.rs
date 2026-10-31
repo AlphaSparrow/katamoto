@@ -210,6 +210,31 @@ mod tests {
     }
 
     #[test]
+    fn test_air_dsl_degree_and_optimization() {
+        let mut air = AirSystem::new(2);
+
+        // Degree 1 constraint
+        air.assert_eq(next(0), curr(0) + constant(5));
+
+        // Degree 2 constraint (quadratic term)
+        air.assert_eq(next(1), curr(1) * curr(0));
+
+        // Redundant dead constraint: curr(0) - curr(0) == 0
+        air.assert_zero(curr(0) - curr(0));
+
+        // Redundant zero additions: curr(1) + 0 == next(1) * 1
+        air.assert_eq(curr(1) + constant(0), next(1) * constant(1));
+
+        assert_eq!(air.max_constraint_degree(), 2);
+        assert_eq!(air.transition_constraints.len(), 4);
+
+        // Optimize constraints
+        let removed = air.optimize_constraints();
+        assert_eq!(removed, 1, "Dead constraint should be eliminated");
+        assert_eq!(air.transition_constraints.len(), 3);
+    }
+
+    #[test]
     fn test_circle_stark_taptree_compilation_and_telemetry() {
         let trace = ExecutionTrace::generate_fibonacci(16, 1, 1);
         let num_circle_fri_queries = 2;

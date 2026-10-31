@@ -51,6 +51,80 @@ impl Expr {
             Expr::Mul(lhs, rhs) => lhs.eval(curr_row, next_row) * rhs.eval(curr_row, next_row),
         }
     }
+
+    /// Returns the algebraic degree of the symbolic polynomial constraint expression
+    pub fn degree(&self) -> usize {
+        match self {
+            Expr::Atom(Cell::Constant(_)) => 0,
+            Expr::Atom(Cell::Curr(_)) | Expr::Atom(Cell::Next(_)) => 1,
+            Expr::Add(lhs, rhs) | Expr::Sub(lhs, rhs) => lhs.degree().max(rhs.degree()),
+            Expr::Mul(lhs, rhs) => lhs.degree() + rhs.degree(),
+        }
+    }
+
+    /// Recursively simplifies the AST using constant folding and algebraic identities
+    pub fn simplify(&self) -> Expr {
+        match self {
+            Expr::Atom(c) => Expr::Atom(*c),
+            Expr::Add(lhs, rhs) => {
+                let l = lhs.simplify();
+                let r = rhs.simplify();
+                match (&l, &r) {
+                    (Expr::Atom(Cell::Constant(c1)), Expr::Atom(Cell::Constant(c2))) => {
+                        Expr::Atom(Cell::Constant(*c1 + *c2))
+                    }
+                    (Expr::Atom(Cell::Constant(c)), other) | (other, Expr::Atom(Cell::Constant(c)))
+                        if c.0 == 0 =>
+                    {
+                        other.clone()
+                    }
+                    _ => Expr::Add(Box::new(l), Box::new(r)),
+                }
+            }
+            Expr::Sub(lhs, rhs) => {
+                let l = lhs.simplify();
+                let r = rhs.simplify();
+                if l == r {
+                    return Expr::Atom(Cell::Constant(M31::ZERO));
+                }
+                match (&l, &r) {
+                    (Expr::Atom(Cell::Constant(c1)), Expr::Atom(Cell::Constant(c2))) => {
+                        Expr::Atom(Cell::Constant(*c1 - *c2))
+                    }
+                    (other, Expr::Atom(Cell::Constant(c))) if c.0 == 0 => other.clone(),
+                    _ => Expr::Sub(Box::new(l), Box::new(r)),
+                }
+            }
+            Expr::Mul(lhs, rhs) => {
+                let l = lhs.simplify();
+                let r = rhs.simplify();
+                match (&l, &r) {
+                    (Expr::Atom(Cell::Constant(c1)), Expr::Atom(Cell::Constant(c2))) => {
+                        Expr::Atom(Cell::Constant(*c1 * *c2))
+                    }
+                    (Expr::Atom(Cell::Constant(c)), _) | (_, Expr::Atom(Cell::Constant(c)))
+                        if c.0 == 0 =>
+                    {
+                        Expr::Atom(Cell::Constant(M31::ZERO))
+                    }
+                    (Expr::Atom(Cell::Constant(c)), other) | (other, Expr::Atom(Cell::Constant(c)))
+                        if c.0 == 1 =>
+                    {
+                        other.clone()
+                    }
+                    _ => Expr::Mul(Box::new(l), Box::new(r)),
+                }
+            }
+        }
+    }
+
+    /// Checks if the expression is a constant zero
+    pub fn is_zero(&self) -> bool {
+        match self {
+            Expr::Atom(Cell::Constant(c)) => c.0 == 0,
+            _ => false,
+        }
+    }
 }
 
 // Fluent operator overloading for building constraints
@@ -115,6 +189,27 @@ impl AirSystem {
     pub fn assert_eq(&mut self, lhs: Expr, rhs: Expr) -> &mut Self {
         self.assert_zero(lhs - rhs);
         self
+    }
+
+    /// Returns the maximum constraint degree across all transition constraints
+    pub fn max_constraint_degree(&self) -> usize {
+        self.transition_constraints
+            .iter()
+            .map(|c| c.degree())
+            .max()
+            .unwrap_or(0)
+    }
+
+    /// Optimizes constraint expressions using AST constant folding and eliminates trivially zero constraints
+    pub fn optimize_constraints(&mut self) -> usize {
+        let before_count = self.transition_constraints.len();
+        self.transition_constraints = self
+            .transition_constraints
+            .iter()
+            .map(|c| c.simplify())
+            .filter(|c| !c.is_zero())
+            .collect();
+        before_count - self.transition_constraints.len()
     }
 
     /// Adds a boundary constraint: column[step] == expected_value
