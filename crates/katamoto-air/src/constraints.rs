@@ -215,3 +215,87 @@ impl LogUpScript {
         wit
     }
 }
+
+/// Multi-Table LogUp Step supporting simultaneous lookups across multiple tables
+/// with domain-separated table IDs and fractional multiplicities over QM31.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MultiTableLogUpStep {
+    pub prev_accum: QM31,
+    pub curr_accum: QM31,
+    pub table_1_id: M31,
+    pub val_1: M31,
+    pub mult_1: M31,
+    pub table_2_id: M31,
+    pub val_2: M31,
+    pub mult_2: M31,
+    pub gamma: QM31,
+    pub beta: QM31,
+}
+
+impl MultiTableLogUpStep {
+    pub fn new(
+        prev_accum: QM31,
+        table_1_id: M31,
+        val_1: M31,
+        mult_1: M31,
+        table_2_id: M31,
+        val_2: M31,
+        mult_2: M31,
+        gamma: QM31,
+        beta: QM31,
+    ) -> Self {
+        let t1_qm31 = QM31::from_m31(table_1_id, M31::ZERO, M31::ZERO, M31::ZERO);
+        let v1_qm31 = QM31::from_m31(val_1, M31::ZERO, M31::ZERO, M31::ZERO);
+        let term_1 = (t1_qm31 * beta) + v1_qm31;
+        let d1 = (gamma - term_1).inv().expect("gamma cannot equal table 1 term");
+
+        let t2_qm31 = QM31::from_m31(table_2_id, M31::ZERO, M31::ZERO, M31::ZERO);
+        let v2_qm31 = QM31::from_m31(val_2, M31::ZERO, M31::ZERO, M31::ZERO);
+        let term_2 = (t2_qm31 * beta) + v2_qm31;
+        let d2 = (gamma - term_2).inv().expect("gamma cannot equal table 2 term");
+
+        let m1_qm31 = QM31::from_m31(mult_1, M31::ZERO, M31::ZERO, M31::ZERO);
+        let m2_qm31 = QM31::from_m31(mult_2, M31::ZERO, M31::ZERO, M31::ZERO);
+
+        let delta = (m1_qm31 * d1) + (m2_qm31 * d2);
+        let curr_accum = prev_accum + delta;
+
+        Self {
+            prev_accum,
+            curr_accum,
+            table_1_id,
+            val_1,
+            mult_1,
+            table_2_id,
+            val_2,
+            mult_2,
+            gamma,
+            beta,
+        }
+    }
+
+    /// Decomposes multi-table LogUp fractional step into linear polynomial equality:
+    ///   LHS = (A_{k+1} - A_k) * D1 * D2
+    ///   RHS = m1 * D2 + m2 * D1
+    ///   LHS == RHS (over QM31)
+    pub fn decompose(&self) -> (QM31, QM31) {
+        let t1_qm31 = QM31::from_m31(self.table_1_id, M31::ZERO, M31::ZERO, M31::ZERO);
+        let v1_qm31 = QM31::from_m31(self.val_1, M31::ZERO, M31::ZERO, M31::ZERO);
+        let term_1 = (t1_qm31 * self.beta) + v1_qm31;
+        let d1 = self.gamma - term_1;
+
+        let t2_qm31 = QM31::from_m31(self.table_2_id, M31::ZERO, M31::ZERO, M31::ZERO);
+        let v2_qm31 = QM31::from_m31(self.val_2, M31::ZERO, M31::ZERO, M31::ZERO);
+        let term_2 = (t2_qm31 * self.beta) + v2_qm31;
+        let d2 = self.gamma - term_2;
+
+        let delta_a = self.curr_accum - self.prev_accum;
+        let lhs = delta_a * d1 * d2;
+
+        let m1_qm31 = QM31::from_m31(self.mult_1, M31::ZERO, M31::ZERO, M31::ZERO);
+        let m2_qm31 = QM31::from_m31(self.mult_2, M31::ZERO, M31::ZERO, M31::ZERO);
+        let rhs = (m1_qm31 * d2) + (m2_qm31 * d1);
+
+        (lhs, rhs)
+    }
+}

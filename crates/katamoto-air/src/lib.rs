@@ -6,7 +6,9 @@ pub mod taptree_compiler;
 pub mod trace;
 
 pub use bisection::{BisectionState, BitVm2DisputeGraph, DisputeResolutionScript, WotsDisputeResolution};
-pub use constraints::{BoundaryConstraint, FibonacciTransition, LogUpScript, LogUpStep, LogUpTable};
+pub use constraints::{
+    BoundaryConstraint, FibonacciTransition, LogUpScript, LogUpStep, LogUpTable, MultiTableLogUpStep,
+};
 pub use dsl::{
     constant, curr, next, AirDslError, AirSystem, BitwiseOpsGadget, Blake3RoundGadget, Cell,
     Expr, RangeCheck16Gadget, RangeCheck8Gadget, Sha256RoundGadget,
@@ -403,6 +405,42 @@ mod tests {
         let mut vm = Vm::with_witness(witness);
         let ok = vm.execute(builder.as_bytes()).expect("LogUp verification should succeed");
         assert!(ok);
+    }
+
+    #[test]
+    fn test_multi_table_logup_argument_verification() {
+        use katamoto_field::QM31;
+
+        let gamma = QM31::from_u32(1111, 2222, 3333, 4444);
+        let beta = QM31::from_u32(555, 666, 777, 888);
+        let prev_accum = QM31::from_u32(50, 60, 70, 80);
+
+        // Table 1: Opcode table (ID = 1, val = 10, mult = 2)
+        // Table 2: Range table (ID = 2, val = 255, mult = 3)
+        let step = MultiTableLogUpStep::new(
+            prev_accum,
+            M31::new(1),
+            M31::new(10),
+            M31::new(2),
+            M31::new(2),
+            M31::new(255),
+            M31::new(3),
+            gamma,
+            beta,
+        );
+
+        let (lhs, rhs) = step.decompose();
+        assert_eq!(lhs, rhs, "Multi-table LogUp relation LHS == RHS must hold");
+
+        // Execute on Bitcoin Script VM
+        let mut builder = ScriptBuilder::new();
+        LogUpScript::emit_qm31_verifier(&mut builder);
+
+        let witness = LogUpScript::create_qm31_witness(lhs, rhs);
+        let mut vm = Vm::with_witness(witness);
+        let ok = vm.execute(builder.as_bytes()).expect("Multi-table LogUp VM verification failed");
+        assert!(ok);
+        assert_eq!(vm.stack().last().unwrap(), &[1]);
     }
 
     #[test]

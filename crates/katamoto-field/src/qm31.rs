@@ -370,12 +370,21 @@ impl QM31Script {
     }
 
     /// Verifies equality of two QM31 elements on stack:
-    /// Input Stack: `[expected_QM31 (4 items), actual_QM31 (4 items)]`
+    /// Input Stack: `[expected_QM31 (A0..A3), actual_QM31 (B0..B3)]` (B3 on top)
     /// Leaves TRUE (1) on stack if identical.
     pub fn emit_equalverify(builder: &mut ScriptBuilder) {
-        for _ in 0..4 {
-            builder.op_equalverify();
-        }
+        // Stack: [A0, A1, A2, A3, B0, B1, B2, B3]
+        builder.op_roll(4);
+        builder.op_equalverify(); // A3 == B3
+
+        builder.op_roll(3);
+        builder.op_equalverify(); // A2 == B2
+
+        builder.op_roll(2);
+        builder.op_equalverify(); // A1 == B1
+
+        builder.op_equalverify(); // A0 == B0
+
         builder.push_int(1);
     }
 }
