@@ -75,13 +75,35 @@ impl FriSecurityConfig {
         merkle_paths_per_query: 1,
     };
 
+    /// 96-bit security with 16-to-1 folding (ultra-compact L1 settlement)
+    pub const SECURITY_96_ARITY16: Self = Self {
+        target_security_bits: 96,
+        pow_bits: 24,
+        folding_arity: 16,
+        log_blowup: 1,
+        query_count: 20,
+        merkle_paths_per_query: 1,
+    };
+
+    /// 128-bit security with 16-to-1 folding (maximum settlement compaction)
+    pub const SECURITY_128_ARITY16: Self = Self {
+        target_security_bits: 128,
+        pow_bits: 28,
+        folding_arity: 16,
+        log_blowup: 2,
+        query_count: 26,
+        merkle_paths_per_query: 1,
+    };
+
     /// All available presets for enumeration in benchmarks
     pub const ALL_PRESETS: &'static [Self] = &[
         Self::SECURITY_96_ARITY2,
         Self::SECURITY_96_ARITY4,
         Self::SECURITY_96_ARITY8,
+        Self::SECURITY_96_ARITY16,
         Self::SECURITY_128_ARITY4,
         Self::SECURITY_128_ARITY8,
+        Self::SECURITY_128_ARITY16,
     ];
 
     /// Compute effective security bits from soundness analysis:
@@ -98,6 +120,7 @@ impl FriSecurityConfig {
             2 => 1u32,
             4 => 2,
             8 => 3,
+            16 => 4,
             _ => 1,
         };
         let effective_layers = (num_fri_layers + layers_per_fold - 1) / layers_per_fold;
@@ -119,9 +142,10 @@ impl FriSecurityConfig {
 
         // Each FRI query also carries sibling evaluations (M31 = 4 bytes each)
         let siblings_per_query = match self.folding_arity {
-            2 => 1u64,  // f(-x) only
-            4 => 3u64,  // f(-x), f(y), f(-y)
-            8 => 7u64,  // 7 siblings
+            2 => 1u64,   // f(-x) only
+            4 => 3u64,   // f(-x), f(y), f(-y)
+            8 => 7u64,   // 7 siblings
+            16 => 15u64, // 15 siblings
             _ => 1,
         };
         let field_witness_bytes =
@@ -308,10 +332,12 @@ mod tests {
         let v2 = FriSecurityConfig::SECURITY_96_ARITY2.total_merkle_verifications(num_layers);
         let v4 = FriSecurityConfig::SECURITY_96_ARITY4.total_merkle_verifications(num_layers);
         let v8 = FriSecurityConfig::SECURITY_96_ARITY8.total_merkle_verifications(num_layers);
+        let v16 = FriSecurityConfig::SECURITY_96_ARITY16.total_merkle_verifications(num_layers);
 
-        // 4-to-1 and 8-to-1 should require strictly fewer Merkle verifications
+        // 4-to-1, 8-to-1, and 16-to-1 should require strictly fewer Merkle verifications
         assert!(v4 < v2, "4-to-1 must reduce Merkle paths vs 2-to-1");
         assert!(v8 < v4, "8-to-1 must reduce Merkle paths vs 4-to-1");
+        assert!(v16 < v8, "16-to-1 must reduce Merkle paths vs 8-to-1");
     }
 
     #[test]
