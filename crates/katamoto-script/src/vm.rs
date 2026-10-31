@@ -7,6 +7,203 @@ pub const MAX_STACK_SIZE: usize = 1000;
 pub const MAX_ELEMENT_SIZE: usize = 520;
 pub const MAX_SCRIPT_NUM_LENGTH: usize = 8; // 64-bit ScriptNum support for Tapscript arithmetic
 
+/// Memory-optimized stack item for the Bitcoin Tapscript VM.
+/// Up to 32 bytes are stored inline without heap allocations (covering all hashes,
+/// public keys, and ScriptNum integers). Larger payloads spill over to boxed slices.
+#[derive(Clone, Eq, Hash)]
+pub struct StackItem {
+    len: u8,
+    data: [u8; 32],
+    heap: Option<Box<[u8]>>,
+}
+
+impl Default for StackItem {
+    fn default() -> Self {
+        Self::empty()
+    }
+}
+
+impl std::fmt::Debug for StackItem {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Debug::fmt(self.as_slice(), f)
+    }
+}
+
+impl StackItem {
+    pub const fn empty() -> Self {
+        Self {
+            len: 0,
+            data: [0u8; 32],
+            heap: None,
+        }
+    }
+
+    pub fn from_slice(slice: &[u8]) -> Self {
+        if slice.len() <= 32 {
+            let mut data = [0u8; 32];
+            data[..slice.len()].copy_from_slice(slice);
+            Self {
+                len: slice.len() as u8,
+                data,
+                heap: None,
+            }
+        } else {
+            Self {
+                len: 0,
+                data: [0u8; 32],
+                heap: Some(slice.into()),
+            }
+        }
+    }
+
+    pub fn from_vec(vec: Vec<u8>) -> Self {
+        if vec.len() <= 32 {
+            Self::from_slice(&vec)
+        } else {
+            Self {
+                len: 0,
+                data: [0u8; 32],
+                heap: Some(vec.into_boxed_slice()),
+            }
+        }
+    }
+
+    pub fn from_array_32(arr: [u8; 32]) -> Self {
+        Self {
+            len: 32,
+            data: arr,
+            heap: None,
+        }
+    }
+
+    #[inline(always)]
+    pub fn as_slice(&self) -> &[u8] {
+        if let Some(h) = &self.heap {
+            h.as_ref()
+        } else {
+            &self.data[..self.len as usize]
+        }
+    }
+
+    #[inline(always)]
+    pub fn len(&self) -> usize {
+        if let Some(h) = &self.heap {
+            h.len()
+        } else {
+            self.len as usize
+        }
+    }
+
+    #[inline(always)]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    pub fn to_vec(&self) -> Vec<u8> {
+        self.as_slice().to_vec()
+    }
+}
+
+impl std::ops::Deref for StackItem {
+    type Target = [u8];
+    #[inline(always)]
+    fn deref(&self) -> &[u8] {
+        self.as_slice()
+    }
+}
+
+impl AsRef<[u8]> for StackItem {
+    #[inline(always)]
+    fn as_ref(&self) -> &[u8] {
+        self.as_slice()
+    }
+}
+
+impl std::borrow::Borrow<[u8]> for StackItem {
+    #[inline(always)]
+    fn borrow(&self) -> &[u8] {
+        self.as_slice()
+    }
+}
+
+impl From<Vec<u8>> for StackItem {
+    fn from(v: Vec<u8>) -> Self {
+        Self::from_vec(v)
+    }
+}
+
+impl From<&[u8]> for StackItem {
+    fn from(s: &[u8]) -> Self {
+        Self::from_slice(s)
+    }
+}
+
+impl From<StackItem> for Vec<u8> {
+    fn from(item: StackItem) -> Self {
+        item.to_vec()
+    }
+}
+
+impl PartialEq for StackItem {
+    fn eq(&self, other: &Self) -> bool {
+        self.as_slice() == other.as_slice()
+    }
+}
+
+impl PartialEq<[u8]> for StackItem {
+    fn eq(&self, other: &[u8]) -> bool {
+        self.as_slice() == other
+    }
+}
+
+impl PartialEq<&[u8]> for StackItem {
+    fn eq(&self, other: &&[u8]) -> bool {
+        self.as_slice() == *other
+    }
+}
+
+impl PartialEq<Vec<u8>> for StackItem {
+    fn eq(&self, other: &Vec<u8>) -> bool {
+        self.as_slice() == other.as_slice()
+    }
+}
+
+impl PartialEq<StackItem> for Vec<u8> {
+    fn eq(&self, other: &StackItem) -> bool {
+        self.as_slice() == other.as_slice()
+    }
+}
+
+impl PartialEq<StackItem> for &[u8] {
+    fn eq(&self, other: &StackItem) -> bool {
+        *self == other.as_slice()
+    }
+}
+
+impl<const N: usize> PartialEq<[u8; N]> for StackItem {
+    fn eq(&self, other: &[u8; N]) -> bool {
+        self.as_slice() == &other[..]
+    }
+}
+
+impl<const N: usize> PartialEq<&[u8; N]> for StackItem {
+    fn eq(&self, other: &&[u8; N]) -> bool {
+        self.as_slice() == &other[..]
+    }
+}
+
+impl<const N: usize> PartialEq<StackItem> for [u8; N] {
+    fn eq(&self, other: &StackItem) -> bool {
+        &self[..] == other.as_slice()
+    }
+}
+
+impl<const N: usize> PartialEq<StackItem> for &[u8; N] {
+    fn eq(&self, other: &StackItem) -> bool {
+        &self[..] == other.as_slice()
+    }
+}
+
 #[derive(Error, Debug, PartialEq, Eq)]
 pub enum VmError {
     #[error("Stack underflow: needed {needed} items, had {available}")]
@@ -54,8 +251,8 @@ pub struct ScriptProfile {
 
 #[derive(Debug, Clone)]
 pub struct Vm {
-    stack: Vec<Vec<u8>>,
-    alt_stack: Vec<Vec<u8>>,
+    stack: Vec<StackItem>,
+    alt_stack: Vec<StackItem>,
     cond_stack: Vec<bool>,
     stats: ExecutionStats,
     tx_sighash: Option<[u8; 32]>,
@@ -78,8 +275,9 @@ impl Vm {
         let witness_bytes: usize = witness.iter().map(|w| w.len() + 1).sum();
         let witness_wu = witness_bytes;
         let witness_vbytes = (witness_wu + 3) / 4;
+        let stack: Vec<StackItem> = witness.into_iter().map(StackItem::from_vec).collect();
         Self {
-            stack: witness,
+            stack,
             alt_stack: Vec::new(),
             cond_stack: Vec::new(),
             stats: ExecutionStats {
@@ -95,11 +293,11 @@ impl Vm {
         }
     }
 
-    pub fn stack(&self) -> &[Vec<u8>] {
+    pub fn stack(&self) -> &[StackItem] {
         &self.stack
     }
 
-    pub fn alt_stack(&self) -> &[Vec<u8>] {
+    pub fn alt_stack(&self) -> &[StackItem] {
         &self.alt_stack
     }
 
@@ -125,15 +323,16 @@ impl Vm {
         }
     }
 
-    fn push(&mut self, item: Vec<u8>) -> Result<(), VmError> {
-        if item.len() > MAX_ELEMENT_SIZE {
-            return Err(VmError::ElementTooLarge(item.len()));
+    fn push(&mut self, item: StackItem) -> Result<(), VmError> {
+        let item_len = item.len();
+        if item_len > MAX_ELEMENT_SIZE {
+            return Err(VmError::ElementTooLarge(item_len));
         }
         if self.stack.len() + self.alt_stack.len() >= MAX_STACK_SIZE {
             return Err(VmError::StackOverflow);
         }
-        if item.len() > self.stats.max_element_byte_size {
-            self.stats.max_element_byte_size = item.len();
+        if item_len > self.stats.max_element_byte_size {
+            self.stats.max_element_byte_size = item_len;
         }
         self.stack.push(item);
         if self.stack.len() > self.stats.max_stack_depth {
@@ -146,7 +345,7 @@ impl Vm {
         Ok(())
     }
 
-    fn pop(&mut self) -> Result<Vec<u8>, VmError> {
+    fn pop(&mut self) -> Result<StackItem, VmError> {
         self.stack.pop().ok_or(VmError::StackUnderflow {
             needed: 1,
             available: self.stack.len(),
@@ -161,7 +360,7 @@ impl Vm {
 
     fn push_num(&mut self, val: i64) -> Result<(), VmError> {
         let bytes = encode_num(val);
-        self.push(bytes)
+        self.push(StackItem::from_vec(bytes))
     }
 
     pub fn verify_signature(&self, sig: &[u8], pubkey: &[u8]) -> bool {
@@ -221,11 +420,11 @@ impl Vm {
                     return Err(VmError::UnexpectedEof);
                 }
 
-                let data = script[pc..pc + data_len].to_vec();
+                let slice = &script[pc..pc + data_len];
                 pc += data_len;
 
                 if self.is_executing() {
-                    self.push(data)?;
+                    self.push(StackItem::from_slice(slice))?;
                 }
                 continue;
             }
@@ -287,7 +486,7 @@ impl Vm {
             self.stats.opcodes_executed += 1;
 
             match opcode {
-                Opcode::Op0 => self.push(vec![])?,
+                Opcode::Op0 => self.push(StackItem::empty())?,
                 Opcode::OpNop => {}
                 Opcode::OpVerify => {
                     let top = self.pop()?;
@@ -422,10 +621,21 @@ impl Vm {
                     if total_len > MAX_ELEMENT_SIZE {
                         return Err(VmError::ElementTooLarge(total_len));
                     }
-                    let mut result = Vec::with_capacity(total_len);
-                    result.extend_from_slice(&x);
-                    result.extend_from_slice(&y);
-                    self.push(result)?;
+                    if total_len <= 32 {
+                        let mut data = [0u8; 32];
+                        data[..x.len()].copy_from_slice(x.as_slice());
+                        data[x.len()..total_len].copy_from_slice(y.as_slice());
+                        self.push(StackItem {
+                            len: total_len as u8,
+                            data,
+                            heap: None,
+                        })?;
+                    } else {
+                        let mut result = Vec::with_capacity(total_len);
+                        result.extend_from_slice(x.as_slice());
+                        result.extend_from_slice(y.as_slice());
+                        self.push(StackItem::from_vec(result))?;
+                    }
                 }
 
                 // Equality
@@ -544,14 +754,14 @@ impl Vm {
                 // Hashes
                 Opcode::OpSha256 => {
                     let item = self.pop()?;
-                    let hash = Sha256::digest(&item);
-                    self.push(hash.to_vec())?;
+                    let hash = Sha256::digest(item.as_slice());
+                    self.push(StackItem::from_array_32(hash.into()))?;
                 }
                 Opcode::OpHash256 => {
                     let item = self.pop()?;
-                    let hash1 = Sha256::digest(&item);
+                    let hash1 = Sha256::digest(item.as_slice());
                     let hash2 = Sha256::digest(hash1);
-                    self.push(hash2.to_vec())?;
+                    self.push(StackItem::from_array_32(hash2.into()))?;
                 }
 
                 // Signatures & Covenants
