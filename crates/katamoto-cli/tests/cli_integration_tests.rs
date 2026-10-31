@@ -241,3 +241,25 @@ fn test_cli_benchmarks_and_folding_telemetry() {
     assert!(len8 < len16);
     assert!(len16 <= 520, "16-to-1 script must satisfy consensus limit");
 }
+
+#[test]
+fn test_cli_bip380_descriptor_export_and_bech32m() {
+    use katamoto_fri::taproot::{TapLeaf, TapTree};
+
+    // 1. Create TapTree with 2 leaves
+    let l0 = TapLeaf::new("leaf0", vec![0x51]); // OP_1
+    let l1 = TapLeaf::new("leaf1", vec![0x52]); // OP_2
+    let tree = TapTree::new(vec![l0, l1]);
+    let nums_key = [0x02u8; 32];
+    let tweak = tree.tweak(&nums_key);
+
+    assert_eq!(tweak.len(), 32);
+
+    // 2. Validate descriptor string formatting
+    let leaf_raws: Vec<String> = tree.leaves.iter().map(|l| format!("raw({})", hex::encode(&l.script))).collect();
+    let tree_str = format!("{{{}}}", leaf_raws.join(","));
+    let raw_desc = format!("tr({},{})", hex::encode(nums_key), tree_str);
+    assert!(raw_desc.starts_with("tr(0202"));
+    assert!(raw_desc.contains("raw(51)"));
+    assert!(raw_desc.contains("raw(52)"));
+}

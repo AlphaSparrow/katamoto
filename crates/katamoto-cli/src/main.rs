@@ -62,6 +62,7 @@ COMMANDS:
     emit-script [DEPTH]                Emit raw Bitcoin Tapscript bytecode hex (default: 8)
     benchmark-settlement [LOG_DOMAIN]  Compare OP_CAT vs BitVM OTS settlement metrics across FRI arities
     bench [--json]                     Run comprehensive benchmark suite (field, VM, and folding telemetry)
+    export-descriptors [TYPE]          Export BIP-380/BIP-386 Taproot descriptors & Bech32m addresses (canonical/compressed/circle/dispute)
     pq-vault [SATOSHIS] [TIMELOCK]     Demonstrate Post-Quantum Recoverable Bitcoin Vault (PACT) under quantum attack
     verify-headers [COUNT]             Verify ZeroSync-style Bitcoin block header chain in zkVM & dispute TapTree
     help                               Print this help message
@@ -1199,6 +1200,11 @@ fn main() {
             run_benchmarks(json_mode);
         }
 
+        "export-descriptors" => {
+            let desc_type = args.get(2).map(|s| s.as_str()).unwrap_or("canonical");
+            run_export_descriptors(desc_type);
+        }
+
         "help" | "-h" | "--help" => print_usage(),
 
         other => {
@@ -1372,4 +1378,201 @@ fn run_benchmarks(json_output: bool) {
         println!("  Total Benchmark Time: {:.2?}", total_elapsed);
         println!("  [SUCCESS] All Katamoto subsystems validated at peak performance!\n");
     }
+}
+
+fn desc_poly_mod(mut c: u64, val: u64) -> u64 {
+    let c0 = c >> 35;
+    c = ((c & 0x7ffffffff) << 5) ^ val;
+    if (c0 & 1) != 0 { c ^= 0xf5dee51989; }
+    if (c0 & 2) != 0 { c ^= 0xa9fdca3312; }
+    if (c0 & 4) != 0 { c ^= 0x1bab10e32d; }
+    if (c0 & 8) != 0 { c ^= 0x3706b1677a; }
+    if (c0 & 16) != 0 { c ^= 0x644d626ffd; }
+    c
+}
+
+pub fn descriptor_checksum(desc: &str) -> Option<String> {
+    const INPUT_CHARSET: &[u8] = b"0123456789()[],'/*#abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ@_{}";
+    const CHECKSUM_CHARSET: &[u8] = b"qpzry9x8gf2tvdw0s3jn54khce6mua7l";
+
+    let mut c: u64 = 1;
+    let mut cls: u64 = 0;
+    let mut clscount: usize = 0;
+
+    for &ch in desc.as_bytes() {
+        let pos = INPUT_CHARSET.iter().position(|&x| x == ch)?;
+        c = desc_poly_mod(c, (pos & 31) as u64);
+        cls = cls * 3 + (pos >> 5) as u64;
+        clscount += 1;
+        if clscount == 3 {
+            c = desc_poly_mod(c, cls);
+            cls = 0;
+            clscount = 0;
+        }
+    }
+    if clscount > 0 {
+        c = desc_poly_mod(c, cls);
+    }
+    for _ in 0..8 {
+        c = desc_poly_mod(c, 0);
+    }
+    c ^= 1;
+
+    let mut checksum = String::with_capacity(8);
+    for i in 0..8 {
+        let idx = ((c >> (5 * (7 - i))) & 31) as usize;
+        checksum.push(CHECKSUM_CHARSET[idx] as char);
+    }
+    Some(checksum)
+}
+
+pub fn encode_p2tr_address(hrp: &str, output_key: &[u8; 32]) -> String {
+    const CHARSET: &[u8] = b"qpzry9x8gf2tvdw0s3jn54khce6mua7l";
+
+    let mut data = vec![1u8];
+    let mut acc: u32 = 0;
+    let mut bits: u32 = 0;
+    for &byte in output_key {
+        acc = (acc << 8) | (byte as u32);
+        bits += 8;
+        while bits >= 5 {
+            bits -= 5;
+            data.push(((acc >> bits) & 31) as u8);
+        }
+    }
+    if bits > 0 {
+        data.push(((acc << (5 - bits)) & 31) as u8);
+    }
+
+    let polymod = |values: &[u8]| -> u32 {
+        let mut chk: u32 = 1;
+        for &v in values {
+            let top = chk >> 25;
+            chk = ((chk & 0x1ffffff) << 5) ^ (v as u32);
+            if (top & 1) != 0 { chk ^= 0x3b6a57b2; }
+            if (top & 2) != 0 { chk ^= 0x26508e6d; }
+            if (top & 4) != 0 { chk ^= 0x1ea119fa; }
+            if (top & 8) != 0 { chk ^= 0x3d4233dd; }
+            if (top & 16) != 0 { chk ^= 0x2a1462b3; }
+        }
+        chk
+    };
+
+    let mut prefix_expand = Vec::new();
+    for &b in hrp.as_bytes() {
+        prefix_expand.push(b >> 5);
+    }
+    prefix_expand.push(0);
+    for &b in hrp.as_bytes() {
+        prefix_expand.push(b & 31);
+    }
+
+    let mut chk_data = prefix_expand;
+    chk_data.extend_from_slice(&data);
+    chk_data.extend_from_slice(&[0; 6]);
+
+    let chk = polymod(&chk_data) ^ 0x2bc830a3;
+
+    let mut out = String::new();
+    out.push_str(hrp);
+    out.push('1');
+    for &d in &data {
+        out.push(CHARSET[d as usize] as char);
+    }
+    for i in (0..6).rev() {
+        let idx = ((chk >> (5 * i)) & 31) as usize;
+        out.push(CHARSET[idx] as char);
+    }
+    out
+}
+
+fn run_export_descriptors(desc_type: &str) {
+    let internal_nums_key = [0x02u8; 32];
+    let nums_hex = hex::encode(internal_nums_key);
+
+    let (tap_tree, name_desc) = match desc_type {
+        "compressed" => {
+            let stmt = RiscvStatement {
+                initial_pc: 0x1000,
+                final_pc: 0x1020,
+                cycle_count: 8,
+                initial_state_root: [0x11; 32],
+                final_state_root: [0x12; 32],
+                program_digest: [0x13; 32],
+            };
+            let aggregated = katamoto_stwo::recursive_verifier::AggregatedRecursiveProof::aggregate(vec![stmt]);
+            let (tree, _) = katamoto_stwo::recursive_verifier::CompressedCanonicalTapTree::compile(&aggregated, 0, 0);
+            (tree, "Compressed 4-Leaf Canonical Verifier")
+        }
+        "circle" => {
+            let trace = ExecutionTrace::generate_fibonacci(16, 1, 1);
+            let (tree, _, _) = CircleStarkTapTreeCompiler::compile_circle_stark(&trace, 2);
+            (tree, "Circle STARK 4-Leaf Verifier")
+        }
+        "dispute" => {
+            let header = BitcoinHeader {
+                version: 1,
+                prev_block_hash: [0x00; 32],
+                merkle_root: [0xaa; 32],
+                time: 1231006505,
+                nbits: 0x1d00ffff,
+                nonce: 2083236893,
+            };
+            let chain = HeaderChain::new(vec![header]);
+            let (_, tree, _) = HeaderDisputeCompiler::compile_header_dispute(&chain, [0x11; 32], [0x22; 32], 100_000_000, 144);
+            (tree, "BitVM2 Header Dispute Verifier")
+        }
+        _ => {
+            let stmt = RiscvStatement {
+                initial_pc: 0x80000000,
+                final_pc: 0x80000010,
+                cycle_count: 4,
+                initial_state_root: [0x01; 32],
+                final_state_root: [0x02; 32],
+                program_digest: [0x03; 32],
+            };
+            let proof = katamoto_stwo::recursive_verifier::CanonicalRecursiveProof::synthesize(stmt);
+            let (tree, _) = katamoto_stwo::recursive_verifier::CanonicalRecursiveTapTree::compile(&proof, 0);
+            (tree, "Canonical 8-Leaf Universal Verifier")
+        }
+    };
+
+    let tweak = tap_tree.tweak(&internal_nums_key);
+    let mainnet_addr = encode_p2tr_address("bc", &tweak);
+    let signet_addr = encode_p2tr_address("tb", &tweak);
+
+    let leaf_raws: Vec<String> = tap_tree.leaves.iter().map(|l| format!("raw({})", hex::encode(&l.script))).collect();
+    let tree_str = format!("{{{}}}", leaf_raws.join(","));
+    let raw_descriptor = format!("tr({},{})", nums_hex, tree_str);
+    let checksum = descriptor_checksum(&raw_descriptor).unwrap_or_else(|| "error".to_string());
+    let full_descriptor = format!("{}#{}", raw_descriptor, checksum);
+
+    let script_pubkey = format!("5120{}", hex::encode(tweak));
+
+    println!("\n==========================================================================================");
+    println!("  KATAMOTO: BIP-380 / BIP-386 Taproot Descriptor Exporter");
+    println!("==========================================================================================");
+    println!("  Target Architecture: {}", name_desc);
+    println!("  Partitioned Leaves:  {} TapLeaves", tap_tree.leaves.len());
+    println!("  TapTree Root:        0x{}", hex::encode(tap_tree.root()));
+    println!("  Tweaked Output Key:  0x{}", hex::encode(tweak));
+    println!("  ScriptPubKey:        {}", script_pubkey);
+
+    println!("\n  ── Bech32m Taproot (P2TR) Addresses ──");
+    println!("  Mainnet Address:     {}", mainnet_addr);
+    println!("  Signet / Testnet:    {}", signet_addr);
+
+    println!("\n  ── Canonical Output Descriptor (BIP-380 Checksummed) ──");
+    println!("  {}", full_descriptor);
+
+    println!("\n  ── Bitcoin Core RPC importdescriptors Configuration ──");
+    println!("  [");
+    println!("    {{");
+    println!("      \"desc\": \"{}\",", full_descriptor);
+    println!("      \"active\": false,");
+    println!("      \"timestamp\": \"now\",");
+    println!("      \"internal\": false");
+    println!("    }}");
+    println!("  ]");
+    println!("\n  [SUCCESS] Taproot output descriptor exported successfully!\n");
 }
