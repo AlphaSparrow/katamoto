@@ -16,7 +16,7 @@
 
 <p>
   <a href="https://crates.io"><img src="https://img.shields.io/badge/crates.io-v0.1.0-orange?style=flat-square" alt="crates.io" /></a>
-  <a href="https://github.com/AlphaSparrow/katamoto"><img src="https://img.shields.io/badge/tests-75%2F75%20passing-brightgreen?style=flat-square" alt="tests" /></a>
+  <a href="https://github.com/AlphaSparrow/katamoto"><img src="https://img.shields.io/badge/tests-86%2F86%20passing-brightgreen?style=flat-square" alt="tests" /></a>
   <a href="https://www.rust-lang.org"><img src="https://img.shields.io/badge/rust-2021-blue?style=flat-square" alt="rust" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT%2FApache--2.0-blue?style=flat-square" alt="license" /></a>
   <a href="https://github.com/bitcoin/bips/pull/1628"><img src="https://img.shields.io/badge/BIP--347-OP__CAT-success?style=flat-square" alt="bip-347" /></a>
@@ -83,12 +83,12 @@ The Katamoto workspace is split into 6 modular crates:
 
 | Crate | Directory | Purpose | Key Primitives |
 | :--- | :--- | :--- | :--- |
-| **`katamoto-script`** | [`crates/katamoto-script`](./crates/katamoto-script) | Bitcoin Tapscript VM, Assembler & Wire Serializer | BIP-347 `OP_CAT`, 64-bit `ScriptNum`, `Transaction` serializer, `ConsensusError` auditor, `TestMempoolAccept` RPC formatter, Winternitz OTS M31/QM31 commitments, PACT post-quantum vault |
-| **`katamoto-field`** | [`crates/katamoto-field`](./crates/katamoto-field) | Finite Fields & Circle Curve Primitives | Mersenne-31 ($M_{31}$), Quartic Extension ($QM_{31}$), Circle Group $C(M_{31})$, zero-`OP_MUL` double-and-add gadgets, Circle FFT butterflies |
-| **`katamoto-fri`** | [`crates/katamoto-fri`](./crates/katamoto-fri) | Merkle Trees, Transcript & Circle FRI Folding | BIP-347 Merkle inclusion verifier, rolling `Transcript`, 4-to-1 & 8-to-1 high-arity Circle FRI folding with packed hints, FRI security parameter presets & adaptive grinding |
-| **`katamoto-air`** | [`crates/katamoto-air`](./crates/katamoto-air) | AIR Constraints & End-to-End Verifier | Fibonacci state machine AIR, DEEP-ALI OOD quotient verifier, LogUp lookup verifier, BitVM2 optimistic bisection dispute game, `CircleStarkTapTreeCompiler` |
-| **`katamoto-stwo`** | [`crates/katamoto-stwo`](./crates/katamoto-stwo) | Starkware Stwo Bridge, Canonical Recursive Verifier & zkVM | Dual-backend compiler (`OP_CAT` vs. Mainnet BitVM OTS), canonical fixed-circuit recursive STARK verifier, ZeroSync Bitcoin header chain verifier in RV32I zkVM |
-| **`katamoto-cli`** | [`crates/katamoto-cli`](./crates/katamoto-cli) | Benchmarks, Telemetry & Settlement Suite | `benchmark-settlement`, `pq-vault`, `verify-headers`, `verify-stark`, `verify-stwo`, `dispute-graph` |
+| **`katamoto-script`** | [`crates/katamoto-script`](./crates/katamoto-script) | Bitcoin Tapscript VM, Assembler & Wire Serializer | BIP-347 `OP_CAT`, zero-copy `StackItem`, expanded peephole optimizer, 64-bit `ScriptNum`, `Transaction` serializer, `ConsensusError` auditor, `TestMempoolAccept` RPC formatter, Winternitz OTS M31/QM31 & WOTS state-transition commitments, PACT post-quantum vault |
+| **`katamoto-field`** | [`crates/katamoto-field`](./crates/katamoto-field) | Finite Fields & Circle Curve Primitives | Mersenne-31 ($M_{31}$), Quartic Extension ($QM_{31}$), Montgomery batch inversion ($O(n)$ with 1 Fermat inversion), fast squaring, Circle Group $C(M_{31})$, precomputed Circle twiddle factor cache, zero-`OP_MUL` double-and-add gadgets, Circle FFT butterflies |
+| **`katamoto-fri`** | [`crates/katamoto-fri`](./crates/katamoto-fri) | Merkle Trees, Transcript & Circle FRI Folding | BIP-347 Merkle inclusion verifier, rolling `Transcript`, 4-to-1, 8-to-1 & 16-to-1 high-arity Circle FRI folding with packed hints (75% Merkle proof reduction), FRI security parameter presets & adaptive grinding |
+| **`katamoto-air`** | [`crates/katamoto-air`](./crates/katamoto-air) | AIR Constraints & End-to-End Verifier | Fibonacci state machine AIR, multi-table LogUp lookup arguments over $QM_{31}$, AIR DSL constant folding, DEEP-ALI OOD quotient verifier, BitVM2 optimistic bisection dispute game, `CircleStarkTapTreeCompiler` |
+| **`katamoto-stwo`** | [`crates/katamoto-stwo`](./crates/katamoto-stwo) | Starkware Stwo Bridge, Canonical Recursive Verifier & zkVM | Dual-backend compiler (`OP_CAT` vs. Mainnet BitVM OTS), canonical fixed-circuit recursive STARK verifier, multi-proof recursive aggregation (`AggregatedRecursiveProof`), compressed 4-leaf TapTree, RV32I zkVM with branch/jump/memory verifiers, ZeroSync Bitcoin header chain verifier with BIP-0 difficulty retargeting |
+| **`katamoto-cli`** | [`crates/katamoto-cli`](./crates/katamoto-cli) | Benchmarks, Telemetry & Settlement Suite | `bench` (field, VM, folding telemetry with `--json`), `export-descriptors` (BIP-380/BIP-386 & Bech32m), `benchmark-settlement`, `pq-vault`, `verify-headers`, `verify-stark`, `verify-stwo`, `dispute-graph` |
 
 ---
 
@@ -190,7 +190,7 @@ git clone https://github.com/AlphaSparrow/katamoto.git
 cd katamoto
 ```
 
-### 1. Run the Entire Test Suite (38 Tests)
+### 1. Run the Entire Test Suite (86 Tests across 6 Crates)
 ```bash
 cargo test
 ```
@@ -260,6 +260,19 @@ cargo run -p katamoto-cli -- pq-vault 50000000 144
 cargo run -p katamoto-cli -- verify-headers 4
 ```
 
+### 15. Run Comprehensive Field, VM & High-Arity Folding Benchmark Suite
+```bash
+cargo run -p katamoto-cli -- bench
+# Or export machine-readable JSON telemetry for CI:
+cargo run -p katamoto-cli -- bench --json
+```
+
+### 16. Export BIP-380/BIP-386 Taproot Descriptors & Bech32m Addresses
+```bash
+cargo run -p katamoto-cli -- export-descriptors canonical
+cargo run -p katamoto-cli -- export-descriptors compressed
+```
+
 ---
 
 ## Breakthrough Innovations: Solving the 7.3 MB Bottleneck
@@ -267,19 +280,20 @@ cargo run -p katamoto-cli -- verify-headers 4
 In standard Circle STARK verification, verifiers check a Merkle authentication path at every single folding layer. Because Merkle hashing dominates total witness size, Katamoto introduces three synergistic innovations that shrink total settlement data by over **70%**:
 
 ### 1. High-Arity ($2^k$-to-1) Circle FRI Folding & Witness Packing
-* **4-to-1 & 8-to-1 Skip-Layer Folding**: Rather than committing to a Merkle tree after every binary fold, the prover packs 4 or 8 sibling evaluations into the witness. The verifier folds 2 or 3 Circle layers at once inside a single TapLeaf before checking the next Merkle root.
-* **50% to 66% Fewer Merkle Paths**: Slashes intermediate Merkle proofs from $D$ to $D / 2$ or $D / 3$.
+* **4-to-1, 8-to-1 & 16-to-1 Skip-Layer Folding**: Rather than committing to a Merkle tree after every binary fold, the prover packs 4, 8, or 16 sibling evaluations into the witness. The verifier folds 2, 3, or 4 Circle layers at once inside a single TapLeaf before checking the next Merkle root.
+* **50% to 75% Fewer Merkle Paths**: Slashes intermediate Merkle proofs from $D$ to $D / 2$, $D / 3$, or $D / 4$ (75% eliminated with 16-to-1 folding!).
 
 ### 2. Dual-Backend Target Compiler (`OP_CAT` vs. Mainnet BitVM OTS)
 * **Backend A (`OP_CAT` Signet)**: Direct covenant introspection via `OP_CAT` and compact 133-byte folding scripts for minimal transaction count on BIP-347 Signet.
 * **Backend B (Mainnet BitVM OTS)**: Pure `OP_CAT`-free state commitments using Winternitz OTS over Mersenne-31, enabling Circle STARK verification on **Bitcoin mainnet today** without soft forks.
 
 ### 3. Canonical Fixed-Circuit Recursive STARK Verifier
-* Rather than auditing custom TapTrees for every application trace, Katamoto verifies a narrow, fixed-topology recursive Stwo verifier circuit in a **pinned 8-leaf TapTree template**, ensuring constant settlement weight.
+* Rather than auditing custom TapTrees for every application trace, Katamoto verifies a narrow, fixed-topology recursive Stwo verifier circuit in a **pinned 8-leaf TapTree template** or a **compressed 4-leaf (depth 2) TapTree**, ensuring constant settlement weight.
+* **Multi-Proof Recursive Aggregation**: `AggregatedRecursiveProof` bundles $K$ independent application proofs into a single root statement commitment via Merkle tree inclusion, settling batches of proofs simultaneously.
 
 ### 4. Post-Quantum Bitcoin Vaults (PACTs) & Light Client
 * **Post-Quantum Recoverable Vaults**: Exploits the pairing-free, hash-based nature of Circle STARKs to protect UTXOs against quantum adversaries equipped with Shor's algorithm.
-* **ZeroSync Header Light Client**: Verifies Bitcoin header chains (double-SHA256 PoW + difficulty adjustment) in zkVM with 37-byte Tapscript dispute leaves.
+* **ZeroSync Header Light Client**: Verifies Bitcoin header chains (double-SHA256 PoW + full BIP-0 consensus 2016-block difficulty retargeting with $[T/4, 4T]$ timespan clamping) in RV32I zkVM with 37-byte Tapscript dispute leaves.
 
 ---
 
@@ -340,6 +354,14 @@ curl --user rpcuser:rpcpass \
   - [x] **Post-Quantum Recoverable Bitcoin Vaults (PACTs)** (`katamoto-script`): 100% hash-based STARK address control recovery protecting UTXOs against quantum computers with Shor's algorithm.
   - [x] **ZeroSync-Style Bitcoin Header Chain Verifier in zkVM** (`katamoto-stwo`): In-zkVM double-SHA256 PoW + difficulty target validation + block continuity chaining with BitVM dispute games.
   - [x] **Settlement Benchmarking Suite & Telemetry** (`katamoto-cli`): Concrete comparative metrics between `OP_CAT` covenants and mainnet BitVM OTS across folding arities.
+- [x] **Phase 5: Ultra-High-Arity 16-to-1 Folding, Multi-Proof Aggregation & Standardized Output Descriptors**
+  - [x] **Montgomery Batch Inversion & Fast Squaring** (`katamoto-field`): $O(n)$ batch inversion with 1 Fermat inverse for $M_{31}$ and $QM_{31}$, twiddle cache in `CircleDomain::coset`.
+  - [x] **16-to-1 Ultra-High-Arity Circle FRI Folding** (`katamoto-fri`): Folds 16 conjugate points across 4 layers into a single TapLeaf, eliminating 75% of intermediate Merkle trees with 64-byte packed witness hints.
+  - [x] **Multi-Table LogUp & AIR DSL Optimization** (`katamoto-air`): Concurrent multi-table lookups over $QM_{31}$, AST constant folding and dead constraint elimination.
+  - [x] **Zero-Copy StackItem & WOTS State Transitions** (`katamoto-script`): Zero-allocation 32-byte inline stack, expanded peephole algebraic folding, dual-chain WOTS state-transition commitments $S_t \to S_{t+1}$.
+  - [x] **RV32I zkVM Extensions & BIP-0 Difficulty Retargeting** (`katamoto-stwo`): Branch (`Beq`/`Bne`), jump (`Jal`), and memory (`Lw`/`Sw`) execution verifiers; consensus 2016-block difficulty retargeting with $[T/4, 4T]$ timespan clamping.
+  - [x] **Multi-Proof Recursive Aggregation & Compressed 4-Leaf TapTree** (`katamoto-stwo`): `AggregatedRecursiveProof` bundling arbitrary application proofs with Merkle inclusion verifier; 4-leaf depth 2 fixed TapTree.
+  - [x] **Benchmarking Suite & BIP-380/BIP-386 Output Descriptors** (`katamoto-cli`): `bench` subcommand with `--json` export; `export-descriptors` exporting checksummed Taproot descriptors (`tr(...)#checksum`) and Bech32m addresses.
 
 ---
 
