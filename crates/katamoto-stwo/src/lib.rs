@@ -5,7 +5,11 @@ pub mod proof;
 pub mod recursive_verifier;
 pub mod riscv;
 
-pub use header_verifier::{BitcoinHeader, HeaderChain, HeaderDisputeCompiler, HeaderScript};
+pub use header_verifier::{
+    BitcoinHeader, DifficultyRetargeter, HeaderChain, HeaderDisputeCompiler, HeaderScript, U256,
+    DIFFICULTY_ADJUSTMENT_INTERVAL, MAX_TIMESPAN, MIN_TIMESPAN, POW_LIMIT_NBITS,
+    POW_TARGET_SPACING, POW_TARGET_TIMESPAN,
+};
 
 pub use channel::{StwoChannel, StwoChannelScript, STWO_CHANNEL_INIT_SEED};
 pub use compiler::{
@@ -544,6 +548,105 @@ mod tests {
             hex::encode(h0_hash),
             hex::encode(stmt.final_state_root)
         );
+    }
+
+    #[test]
+    fn test_difficulty_retargeting_bip0_consensus() {
+        use katamoto_script::ScriptBuilder;
+
+        let start_time = 1261000000_u32;
+
+        // 1. Exact 2-week timespan: Target should remain identical to 0x1d00ffff
+        let target_exact = DifficultyRetargeter::compute_next_target(
+            0x1d00ffff,
+            start_time,
+            start_time + POW_TARGET_TIMESPAN,
+        );
+        assert_eq!(target_exact, 0x1d00ffff);
+
+        // 2. Halved timespan (blocks mined 2x faster, 604,800s):
+        // Difficulty doubles, target halves (mantissa shifts into lower byte: 0x1c7fff80)
+        let target_halved = DifficultyRetargeter::compute_next_target(
+            0x1d00ffff,
+            start_time,
+            start_time + (POW_TARGET_TIMESPAN / 2),
+        );
+        assert_eq!(target_halved, 0x1c7fff80);
+
+        // 3. Ultra-fast timespan (e.g. 50,000s): Must clamp to T / 4 (factor of 4 max adjustment)
+        let target_ultra_fast = DifficultyRetargeter::compute_next_target(
+            0x1d00ffff,
+            start_time,
+            start_time + 50_000,
+        );
+        let target_min_clamped = DifficultyRetargeter::compute_next_target(
+            0x1d00ffff,
+            start_time,
+            start_time + MIN_TIMESPAN,
+        );
+        assert_eq!(target_ultra_fast, target_min_clamped);
+        assert_eq!(target_ultra_fast, 0x1c3fffc0);
+
+        // 4. Test Bitcoin Script timespan clamping verifier gadget in Vm
+        let mut b_clamp = ScriptBuilder::new();
+        let clamped = DifficultyRetargeter::clamp_timespan(604_800);
+        HeaderScript::emit_timespan_clamping_verifier(&mut b_clamp, clamped);
+        let wit_clamp = HeaderScript::create_timespan_witness(start_time, start_time + 604_800);
+
+        let mut vm_clamp = Vm::with_witness(wit_clamp);
+        let ok_clamp = vm_clamp.execute(b_clamp.as_bytes()).expect("Timespan clamping script failed");
+        assert!(ok_clamp);
+        assert_eq!(vm_clamp.stack().last().unwrap(), &[1]);
+
+        // 5. Epoch dispute compiler integration test
+        let h_first = BitcoinHeader {
+            version: 1,
+            prev_block_hash: [0x01; 32],
+            merkle_root: [0xaa; 32],
+            time: start_time,
+            nbits: 0x1d00ffff,
+            nonce: 100,
+        };
+        let h_last = BitcoinHeader {
+            version: 1,
+            prev_block_hash: [0x02; 32],
+            merkle_root: [0xbb; 32],
+            time: start_time + (POW_TARGET_TIMESPAN / 2),
+            nbits: 0x1d00ffff,
+            nonce: 200,
+        };
+        let h_next = BitcoinHeader {
+            version: 1,
+            prev_block_hash: h_last.block_hash(),
+            merkle_root: [0xcc; 32],
+            time: start_time + (POW_TARGET_TIMESPAN / 2) + 600,
+            nbits: 0x1c7fff80, // Correct retargeted difficulty
+            nonce: 300,
+        };
+
+        assert!(DifficultyRetargeter::verify_epoch_transition(&h_first, &h_last, &h_next));
+
+        let operator_key = [0x11; 32];
+        let challenger_key = [0x22; 32];
+        let (_graph, tree, spends) = HeaderDisputeCompiler::compile_epoch_transition_dispute(
+            &h_first,
+            &h_last,
+            &h_next,
+            operator_key,
+            challenger_key,
+            100_000_000,
+            144,
+        );
+
+        assert_eq!(tree.leaves.len(), 2);
+        for spend in &spends {
+            let mut vm = Vm::with_witness(spend.witness_items.clone());
+            let ok = vm.execute(&spend.leaf_script).unwrap_or_else(|e| {
+                panic!("Epoch dispute spend '{}' failed: {:?}", spend.leaf_name, e)
+            });
+            assert!(ok);
+            assert_eq!(vm.stack().last().unwrap(), &[1]);
+        }
     }
 }
 
