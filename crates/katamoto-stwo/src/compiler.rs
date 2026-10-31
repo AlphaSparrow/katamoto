@@ -137,6 +137,26 @@ impl StwoTapTreeCompiler {
                     RiscvScript::emit_add_step_verifier(&mut b_riscv);
                     RiscvScript::create_add_witness(step)
                 }
+                RiscvOpcode::Sub => {
+                    RiscvScript::emit_sub_step_verifier(&mut b_riscv);
+                    RiscvScript::create_sub_witness(step)
+                }
+                RiscvOpcode::Beq => {
+                    RiscvScript::emit_beq_step_verifier(&mut b_riscv);
+                    RiscvScript::create_branch_witness(step)
+                }
+                RiscvOpcode::Bne => {
+                    RiscvScript::emit_bne_step_verifier(&mut b_riscv);
+                    RiscvScript::create_branch_witness(step)
+                }
+                RiscvOpcode::Lw => {
+                    RiscvScript::emit_lw_step_verifier(&mut b_riscv);
+                    RiscvScript::create_lw_witness(step)
+                }
+                RiscvOpcode::Sw => {
+                    RiscvScript::emit_sw_step_verifier(&mut b_riscv);
+                    RiscvScript::create_sw_witness(step)
+                }
                 RiscvOpcode::Jal => {
                     RiscvScript::emit_jal_step_verifier(&mut b_riscv);
                     RiscvScript::create_jal_witness(step)

@@ -98,6 +98,137 @@ mod tests {
         let ok_jal = vm_jal.execute(b_jal.as_bytes()).expect("RISC-V JAL step failed");
         assert!(ok_jal);
         assert_eq!(vm_jal.stack().last().unwrap(), &[1]);
+
+        // 3. Test SUB instruction: x3 = x1 - x2 (50 - 20 = 30), PC: 0x1000 -> 0x1004
+        let sub_step = RiscvStep {
+            pc_curr: 0x1000,
+            pc_next: 0x1004,
+            opcode: RiscvOpcode::Sub,
+            rs1_val: 50,
+            rs2_val: 20,
+            rd_val: 30,
+            imm: 0,
+        };
+        assert!(sub_step.is_valid());
+
+        let mut b_sub = ScriptBuilder::new();
+        RiscvScript::emit_sub_step_verifier(&mut b_sub);
+        let wit_sub = RiscvScript::create_sub_witness(&sub_step);
+
+        let mut vm_sub = Vm::with_witness(wit_sub);
+        let ok_sub = vm_sub.execute(b_sub.as_bytes()).expect("RISC-V SUB step failed");
+        assert!(ok_sub);
+        assert_eq!(vm_sub.stack().last().unwrap(), &[1]);
+
+        // 4. Test BEQ instruction:
+        // Case 4a: rs1 == rs2 -> Branch Taken: target = 0x1000 + 40 = 0x1028
+        let beq_taken = RiscvStep {
+            pc_curr: 0x1000,
+            pc_next: 0x1028,
+            opcode: RiscvOpcode::Beq,
+            rs1_val: 77,
+            rs2_val: 77,
+            rd_val: 0,
+            imm: 40,
+        };
+        assert!(beq_taken.is_valid());
+        let mut b_beq_t = ScriptBuilder::new();
+        RiscvScript::emit_beq_step_verifier(&mut b_beq_t);
+        let wit_beq_t = RiscvScript::create_branch_witness(&beq_taken);
+        let mut vm_beq_t = Vm::with_witness(wit_beq_t);
+        assert!(vm_beq_t.execute(b_beq_t.as_bytes()).expect("BEQ taken failed"));
+        assert_eq!(vm_beq_t.stack().last().unwrap(), &[1]);
+
+        // Case 4b: rs1 != rs2 -> Branch Not Taken: target = 0x1000 + 4 = 0x1004
+        let beq_not_taken = RiscvStep {
+            pc_curr: 0x1000,
+            pc_next: 0x1004,
+            opcode: RiscvOpcode::Beq,
+            rs1_val: 77,
+            rs2_val: 99,
+            rd_val: 0,
+            imm: 40,
+        };
+        assert!(beq_not_taken.is_valid());
+        let mut b_beq_nt = ScriptBuilder::new();
+        RiscvScript::emit_beq_step_verifier(&mut b_beq_nt);
+        let wit_beq_nt = RiscvScript::create_branch_witness(&beq_not_taken);
+        let mut vm_beq_nt = Vm::with_witness(wit_beq_nt);
+        assert!(vm_beq_nt.execute(b_beq_nt.as_bytes()).expect("BEQ not taken failed"));
+        assert_eq!(vm_beq_nt.stack().last().unwrap(), &[1]);
+
+        // 5. Test BNE instruction:
+        // Case 5a: rs1 != rs2 -> Branch Taken: target = 0x1000 + 16 = 0x1010
+        let bne_taken = RiscvStep {
+            pc_curr: 0x1000,
+            pc_next: 0x1010,
+            opcode: RiscvOpcode::Bne,
+            rs1_val: 12,
+            rs2_val: 34,
+            rd_val: 0,
+            imm: 16,
+        };
+        assert!(bne_taken.is_valid());
+        let mut b_bne_t = ScriptBuilder::new();
+        RiscvScript::emit_bne_step_verifier(&mut b_bne_t);
+        let wit_bne_t = RiscvScript::create_branch_witness(&bne_taken);
+        let mut vm_bne_t = Vm::with_witness(wit_bne_t);
+        assert!(vm_bne_t.execute(b_bne_t.as_bytes()).expect("BNE taken failed"));
+        assert_eq!(vm_bne_t.stack().last().unwrap(), &[1]);
+
+        // Case 5b: rs1 == rs2 -> Branch Not Taken: target = 0x1000 + 4 = 0x1004
+        let bne_not_taken = RiscvStep {
+            pc_curr: 0x1000,
+            pc_next: 0x1004,
+            opcode: RiscvOpcode::Bne,
+            rs1_val: 55,
+            rs2_val: 55,
+            rd_val: 0,
+            imm: 16,
+        };
+        assert!(bne_not_taken.is_valid());
+        let mut b_bne_nt = ScriptBuilder::new();
+        RiscvScript::emit_bne_step_verifier(&mut b_bne_nt);
+        let wit_bne_nt = RiscvScript::create_branch_witness(&bne_not_taken);
+        let mut vm_bne_nt = Vm::with_witness(wit_bne_nt);
+        assert!(vm_bne_nt.execute(b_bne_nt.as_bytes()).expect("BNE not taken failed"));
+        assert_eq!(vm_bne_nt.stack().last().unwrap(), &[1]);
+
+        // 6. Test LW / SW memory instructions:
+        // Eff addr = 0x200 + 12 = 0x20C (word 0x83)
+        let lw_step = RiscvStep {
+            pc_curr: 0x1000,
+            pc_next: 0x1004,
+            opcode: RiscvOpcode::Lw,
+            rs1_val: 0x200,
+            rs2_val: 0,
+            rd_val: 0xDEADBEEF_u32,
+            imm: 12,
+        };
+        assert!(lw_step.is_valid());
+        let mut b_lw = ScriptBuilder::new();
+        RiscvScript::emit_lw_step_verifier(&mut b_lw);
+        let wit_lw = RiscvScript::create_lw_witness(&lw_step);
+        let mut vm_lw = Vm::with_witness(wit_lw);
+        assert!(vm_lw.execute(b_lw.as_bytes()).expect("LW step failed"));
+        assert_eq!(vm_lw.stack().last().unwrap(), &[1]);
+
+        let sw_step = RiscvStep {
+            pc_curr: 0x1000,
+            pc_next: 0x1004,
+            opcode: RiscvOpcode::Sw,
+            rs1_val: 0x300,
+            rs2_val: 0xCAFEBABE_u32,
+            rd_val: 0,
+            imm: 8,
+        };
+        assert!(sw_step.is_valid());
+        let mut b_sw = ScriptBuilder::new();
+        RiscvScript::emit_sw_step_verifier(&mut b_sw);
+        let wit_sw = RiscvScript::create_sw_witness(&sw_step);
+        let mut vm_sw = Vm::with_witness(wit_sw);
+        assert!(vm_sw.execute(b_sw.as_bytes()).expect("SW step failed"));
+        assert_eq!(vm_sw.stack().last().unwrap(), &[1]);
     }
 
     #[test]
