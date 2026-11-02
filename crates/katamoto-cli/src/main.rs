@@ -368,7 +368,27 @@ fn main() {
             let (_, spends) = StarkTapTreeCompiler::compile_fibonacci_stark(&trace, 2);
 
             let spend = &spends[leaf_idx.min(spends.len() - 1)];
-            let funding_outpoint = OutPoint::new([0xaa; 32], 0);
+            let default_txid = [
+                0x7a, 0x3f, 0x8b, 0xe3, 0x5d, 0xbb, 0x49, 0x20,
+                0x25, 0x81, 0x69, 0x97, 0x63, 0x26, 0x19, 0xbf,
+                0x6a, 0x8a, 0x87, 0x6b, 0xb4, 0x90, 0xd4, 0x99,
+                0xc5, 0x3f, 0x3f, 0xd1, 0x8f, 0x57, 0xc1, 0x43,
+            ];
+            let funding_txid = args
+                .get(3)
+                .and_then(|s| {
+                    let bytes = hex::decode(s).ok()?;
+                    if bytes.len() == 32 {
+                        let mut arr = [0u8; 32];
+                        arr.copy_from_slice(&bytes);
+                        Some(arr)
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or(default_txid);
+            let funding_vout: u32 = args.get(4).and_then(|s| s.parse().ok()).unwrap_or(0);
+            let funding_outpoint = OutPoint::new(funding_txid, funding_vout);
             let dummy_p2tr_key = [0x55; 32];
             let tx = StarkTapTreeCompiler::build_broadcast_tx(spend, funding_outpoint, &dummy_p2tr_key, 25_000);
 
@@ -761,8 +781,8 @@ fn main() {
             };
 
             let riscv_statement = RiscvStatement {
-                initial_pc: 0x80000000,
-                final_pc: 0x80000004,
+                initial_pc: 0x00010000,
+                final_pc: 0x00010004,
                 cycle_count: 1,
                 initial_state_root: [0x01; 32],
                 final_state_root: [0x02; 32],
@@ -770,8 +790,8 @@ fn main() {
             };
 
             let riscv_step = RiscvStep {
-                pc_curr: 0x80000000,
-                pc_next: 0x80000004,
+                pc_curr: 0x00010000,
+                pc_next: 0x00010004,
                 opcode: RiscvOpcode::Add,
                 rs1_val: 100,
                 rs2_val: 200,
@@ -1524,8 +1544,8 @@ fn run_export_descriptors(desc_type: &str) {
         }
         _ => {
             let stmt = RiscvStatement {
-                initial_pc: 0x80000000,
-                final_pc: 0x80000010,
+                initial_pc: 0x00010000,
+                final_pc: 0x00010010,
                 cycle_count: 4,
                 initial_state_root: [0x01; 32],
                 final_state_root: [0x02; 32],

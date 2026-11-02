@@ -296,8 +296,8 @@ mod tests {
         };
 
         let riscv_statement = RiscvStatement {
-            initial_pc: 0x80000000,
-            final_pc: 0x80000004,
+            initial_pc: 0x00010000,
+            final_pc: 0x00010004,
             cycle_count: 1,
             initial_state_root: [0x01; 32],
             final_state_root: [0x02; 32],
@@ -305,8 +305,8 @@ mod tests {
         };
 
         let riscv_step = RiscvStep {
-            pc_curr: 0x80000000,
-            pc_next: 0x80000004,
+            pc_curr: 0x00010000,
+            pc_next: 0x00010004,
             opcode: RiscvOpcode::Add,
             rs1_val: 100,
             rs2_val: 200,
@@ -352,8 +352,8 @@ mod tests {
     #[test]
     fn test_canonical_fixed_recursive_taptree_verification() {
         let stmt = RiscvStatement {
-            initial_pc: 0x80000000,
-            final_pc: 0x80000020,
+            initial_pc: 0x00010000,
+            final_pc: 0x00010020,
             cycle_count: 8,
             initial_state_root: [0x11; 32],
             final_state_root: [0x22; 32],
@@ -453,7 +453,9 @@ mod tests {
         );
         assert_eq!(pkg_opcat.metrics.backend, VerificationBackend::OpCatSignet);
         assert!(pkg_opcat.metrics.op_cat_required);
-        assert_eq!(pkg_opcat.metrics.tx_count, 1);
+        assert_eq!(pkg_opcat.metrics.tx_count, pkg_opcat.spends.len());
+        assert!(pkg_opcat.metrics.single_leaf_vbytes > 0);
+        assert!(pkg_opcat.metrics.total_vbytes >= pkg_opcat.metrics.single_leaf_vbytes);
 
         // 2. Compile for Backend B: Mainnet BitVM OTS
         let pkg_bitvm = DualBackendCompiler::compile(
@@ -552,7 +554,7 @@ mod tests {
     }
 
     #[test]
-    fn test_difficulty_retargeting_bip0_consensus() {
+    fn test_difficulty_retargeting_nakamoto_consensus() {
         use katamoto_script::ScriptBuilder;
 
         let start_time = 1261000000_u32;

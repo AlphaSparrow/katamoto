@@ -170,7 +170,9 @@ fn test_cli_dual_backend_compiler_comparison() {
     );
     assert_eq!(pkg_opcat.metrics.backend, VerificationBackend::OpCatSignet);
     assert!(pkg_opcat.metrics.op_cat_required);
-    assert_eq!(pkg_opcat.metrics.tx_count, 1);
+    assert_eq!(pkg_opcat.metrics.tx_count, pkg_opcat.spends.len());
+    assert!(pkg_opcat.metrics.single_leaf_vbytes > 0);
+    assert!(pkg_opcat.metrics.total_vbytes >= pkg_opcat.metrics.single_leaf_vbytes);
 
     let pkg_bitvm = DualBackendCompiler::compile(
         &proof,

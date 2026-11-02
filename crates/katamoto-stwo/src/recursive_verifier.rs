@@ -163,8 +163,8 @@ impl AggregatedRecursiveProof {
         let aggregated_statement_root = tree.root();
 
         let dummy_stmt = RiscvStatement {
-            initial_pc: 0x80000000,
-            final_pc: 0x80000000 + (statements.len() as u32 * 128 * 4),
+            initial_pc: 0x00010000,
+            final_pc: 0x00010000 + (statements.len() as u32 * 128 * 4),
             cycle_count: (statements.len() * 128) as u64,
             initial_state_root: aggregated_statement_root,
             final_state_root: aggregated_statement_root,

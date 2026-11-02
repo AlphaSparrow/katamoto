@@ -122,7 +122,7 @@ impl U256 {
     }
 }
 
-/// Bitcoin consensus difficulty retargeter matching BIP-0 / Bitcoin Core rules
+/// Bitcoin consensus difficulty retargeter matching Satoshi / Nakamoto consensus rules
 pub struct DifficultyRetargeter;
 
 impl DifficultyRetargeter {
@@ -309,8 +309,8 @@ impl HeaderChain {
         let program_digest: [u8; 32] = hasher.finalize().into();
 
         RiscvStatement {
-            initial_pc: 0x80000000,
-            final_pc: 0x80000000 + (cycle_count as u32 * 4),
+            initial_pc: 0x00010000,
+            final_pc: 0x00010000 + (cycle_count as u32 * 4),
             cycle_count,
             initial_state_root: genesis_hash,
             final_state_root: tip_hash,
@@ -321,7 +321,7 @@ impl HeaderChain {
     /// Compiles the header verification into a sequence of RISC-V execution steps
     pub fn synthesize_steps(&self) -> Vec<RiscvStep> {
         let mut steps = Vec::new();
-        let mut pc = 0x80000000_u32;
+        let mut pc = 0x00010000_u32;
 
         for (i, _header) in self.headers.iter().enumerate() {
             // Step 1: ALU Add operation checking block sequence

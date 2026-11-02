@@ -257,7 +257,9 @@ pub enum VerificationBackend {
 pub struct SettlementMetrics {
     pub backend: VerificationBackend,
     pub tx_count: usize,
+    pub single_leaf_vbytes: usize,
     pub total_vbytes: usize,
+    pub total_weight_units: usize,
     pub max_script_bytes: usize,
     pub max_witness_bytes: usize,
     pub peak_stack_depth: usize,
@@ -301,18 +303,35 @@ impl DualBackendCompiler {
 
                 let dummy_outpoint = katamoto_script::OutPoint::new([0x11; 32], 0);
                 let dummy_dest = [0x22; 32];
-                let tx = pkg.spends[0].build_spending_tx(
-                    dummy_outpoint,
-                    katamoto_script::TxOut::p2tr(&dummy_dest, 50_000).script_pubkey,
-                    50_000,
-                );
-                let total_vbytes = tx.vsize();
+                let mut total_vbytes = 0;
+                let mut total_weight_units = 0;
+                for spend in &pkg.spends {
+                    let tx = spend.build_spending_tx(
+                        dummy_outpoint.clone(),
+                        katamoto_script::TxOut::p2tr(&dummy_dest, 50_000).script_pubkey,
+                        50_000,
+                    );
+                    total_vbytes += tx.vsize();
+                    total_weight_units += tx.weight();
+                }
+                let single_leaf_vbytes = if !pkg.spends.is_empty() {
+                    let tx0 = pkg.spends[0].build_spending_tx(
+                        dummy_outpoint.clone(),
+                        katamoto_script::TxOut::p2tr(&dummy_dest, 50_000).script_pubkey,
+                        50_000,
+                    );
+                    tx0.vsize()
+                } else {
+                    0
+                };
                 let peak_stack_depth = 18; // Peak stack watermark for OP_CAT circle folding
 
                 let metrics = SettlementMetrics {
                     backend,
-                    tx_count: 1,
+                    tx_count: pkg.spends.len(),
+                    single_leaf_vbytes,
                     total_vbytes,
+                    total_weight_units,
                     max_script_bytes: pkg.telemetry.max_script_bytes,
                     max_witness_bytes: pkg.telemetry.max_witness_bytes,
                     peak_stack_depth,
@@ -480,7 +499,9 @@ impl DualBackendCompiler {
                 let metrics = SettlementMetrics {
                     backend,
                     tx_count: 4,
+                    single_leaf_vbytes: disprove_tx.vsize(),
                     total_vbytes,
+                    total_weight_units: total_vbytes * 4,
                     max_script_bytes,
                     max_witness_bytes,
                     peak_stack_depth: 32,
