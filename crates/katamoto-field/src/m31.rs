@@ -188,14 +188,24 @@ impl M31Script {
     /// Emits script that adds top two stack items modulo M31_P:
     /// Input Stack: `[..., a, b]`
     /// Output Stack: `[..., (a + b) % M31_P]`
+    ///
+    /// Consensus-Strict (4-byte ScriptNum):
+    /// Rather than computing a + b directly (which can reach 2p - 2 > 2^31 - 1 and overflow 4-byte ScriptNum),
+    /// we compute:
+    ///   b' = p - b
+    ///   res = a - b' = a + b - p  (strictly in [-p, p], never exceeding 4 bytes signed)
+    ///   if res < 0: res = res + p
     pub fn emit_add(builder: &mut ScriptBuilder) {
-        builder.op_add();
-        builder.op_dup();
         builder.push_int(M31_P);
-        builder.push_opcode(Opcode::OpGreaterThanOrEqual);
+        builder.op_swap();
+        builder.op_sub(); // p - b
+        builder.op_sub(); // a - (p - b) = a + b - p
+        builder.op_dup();
+        builder.push_int(0);
+        builder.push_opcode(Opcode::OpLessThan);
         builder.op_if();
         builder.push_int(M31_P);
-        builder.op_sub();
+        builder.op_add();
         builder.op_endif();
     }
 

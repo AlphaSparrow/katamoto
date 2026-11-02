@@ -5,7 +5,7 @@ use thiserror::Error;
 
 pub const MAX_STACK_SIZE: usize = 1000;
 pub const MAX_ELEMENT_SIZE: usize = 520;
-pub const MAX_SCRIPT_NUM_LENGTH: usize = 8; // 64-bit ScriptNum support for Tapscript arithmetic
+pub const MAX_SCRIPT_NUM_LENGTH: usize = 4; // Strict BIP-342 4-byte consensus ScriptNum limit
 
 /// Memory-optimized stack item for the Bitcoin Tapscript VM.
 /// Up to 32 bytes are stored inline without heap allocations (covering all hashes,
@@ -837,13 +837,17 @@ mod tests {
             let mut builder = ScriptBuilder::new();
             builder.push_int(a as i64);
             builder.push_int(b as i64);
-            builder.op_add();
-            builder.op_dup();
+            // Consensus-safe M31 addition using subtraction trick (strictly stays within 4-byte ScriptNum)
             builder.push_int(M31_P);
-            builder.push_opcode(Opcode::OpGreaterThanOrEqual);
+            builder.op_swap();
+            builder.op_sub(); // p - b
+            builder.op_sub(); // a - (p - b) = a + b - p
+            builder.op_dup();
+            builder.push_int(0);
+            builder.push_opcode(Opcode::OpLessThan);
             builder.op_if();
             builder.push_int(M31_P);
-            builder.op_sub();
+            builder.op_add();
             builder.op_endif();
 
             let mut vm = Vm::new();
@@ -910,29 +914,39 @@ mod tests {
         for &val in &a { builder.push_int(val as i64); }
         for &val in &b { builder.push_int(val as i64); }
 
+        let emit_m31_add = |b: &mut ScriptBuilder| {
+            b.push_int(M31_P);
+            b.op_swap();
+            b.op_sub();
+            b.op_sub();
+            b.op_dup();
+            b.push_int(0);
+            b.push_opcode(Opcode::OpLessThan);
+            b.op_if();
+            b.push_int(M31_P);
+            b.op_add();
+            b.op_endif();
+        };
+
         // Stack has 8 items: [a0, a1, a2, a3, b0, b1, b2, b3]
         // Add component 3: (a3 + b3)
         // b3 is at top (depth 0). a3 is at depth 4.
         builder.op_roll(4);
-        builder.op_add();
-        builder.op_dup().push_int(M31_P).push_opcode(Opcode::OpGreaterThanOrEqual).op_if().push_int(M31_P).op_sub().op_endif();
+        emit_m31_add(&mut builder);
         builder.op_toaltstack(); // Save res3
 
         // Component 2: b2 is now top (depth 0), a2 is at depth 3.
         builder.op_roll(3);
-        builder.op_add();
-        builder.op_dup().push_int(M31_P).push_opcode(Opcode::OpGreaterThanOrEqual).op_if().push_int(M31_P).op_sub().op_endif();
+        emit_m31_add(&mut builder);
         builder.op_toaltstack(); // Save res2
 
         // Component 1: b1 is now top (depth 0), a1 is at depth 2.
         builder.op_roll(2);
-        builder.op_add();
-        builder.op_dup().push_int(M31_P).push_opcode(Opcode::OpGreaterThanOrEqual).op_if().push_int(M31_P).op_sub().op_endif();
+        emit_m31_add(&mut builder);
         builder.op_toaltstack(); // Save res1
 
         // Component 0: [a0, b0]
-        builder.op_add();
-        builder.op_dup().push_int(M31_P).push_opcode(Opcode::OpGreaterThanOrEqual).op_if().push_int(M31_P).op_sub().op_endif();
+        emit_m31_add(&mut builder);
 
         // Restore components from altstack: res1, res2, res3
         builder.op_fromaltstack();
