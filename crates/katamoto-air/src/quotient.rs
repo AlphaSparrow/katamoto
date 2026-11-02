@@ -108,19 +108,14 @@ impl OodQuotientScript {
 
     /// Sub-leaf 2: Emits script verifying transition quotient difference:
     ///   LHS_t == (v2 - v1 - v0) mod M31_P
-    /// Expected Witness Stack: `[v2, v1, v0, lhs_t]`
+    /// Expected Witness Stack: `[v2, v1, v0, lhs_t]` (where lhs_t is at stack top)
     pub fn emit_split_transition_verifier(builder: &mut ScriptBuilder) {
-        // [v2, v1, v0, lhs_t]
-        builder.op_toaltstack(); // alt: [lhs_t]
-        builder.op_swap(); // [v2, v0, v1]
-        M31Script::emit_sub(builder); // [v2, (v0 - v1)]
-        builder.op_swap(); // [(v0 - v1), v2]
-        // Actually: v2 - v1 - v0 = (v2 - v1) - v0
-        // Let's do canonical:
-        // roll or altstack:
-        // stack: [(v0 - v1), v2]
-        builder.op_fromaltstack(); // [(v0 - v1), v2, lhs_t]
-        builder.op_drop();
+        // Stack top: [v2, v1, v0, lhs_t]
+        builder.op_toaltstack();      // altstack: [lhs_t], main stack: [v2, v1, v0]
+        M31Script::emit_add(builder); // [v2, (v1 + v0) mod P]
+        M31Script::emit_sub(builder); // [(v2 - (v1 + v0)) mod P = (v2 - v1 - v0) mod P]
+        builder.op_fromaltstack();    // [(v2 - v1 - v0), lhs_t]
+        builder.op_equalverify();     // asserts (v2 - v1 - v0) == lhs_t
         builder.push_int(1);
     }
 
