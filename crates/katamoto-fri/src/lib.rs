@@ -570,7 +570,160 @@ mod tests {
             vm.stats().max_stack_depth
         );
     }
+
+    #[test]
+    fn test_soundness_vulnerability_unbound_colinearity_witness() {
+        use katamoto_script::builder::encode_num;
+
+        // An attacker feeds arbitrary witness values where LHS = T1 + T2 (e.g. 10 = 3 + 7).
+        // Neither T1 nor T2 are bound to the actual polynomial evaluations f(P) or f(-P).
+        let attacker_lhs = 10i64;
+        let attacker_t1 = 3i64;
+        let attacker_t2 = 7i64;
+
+        let mut builder = ScriptBuilder::new();
+        CircleFriScript::emit_colinearity_verifier(&mut builder);
+
+        let unconstrained_witness = vec![
+            encode_num(attacker_lhs),
+            encode_num(attacker_t1),
+            encode_num(attacker_t2),
+        ];
+
+        let mut vm = Vm::with_witness(unconstrained_witness);
+        let ok = vm.execute(builder.as_bytes()).expect("Execution should complete");
+        // This evaluates to TRUE! This confirms the reviewer's finding:
+        // the unconstrained colinearity verifier alone does not bind T1 and T2 to Merkle leaf preimages.
+        assert!(ok, "Soundness vulnerability confirmed: unconstrained witness passes");
+    }
+
+    #[test]
+    fn test_soundness_preimage_bound_round_rejects_tampered_evaluation() {
+        use katamoto_field::circle::circle_subgroup_generator;
+        use katamoto_field::M31;
+
+        let gen = circle_subgroup_generator(3);
+        let f_p = M31::new(112233);
+        let f_conj = M31::new(445566);
+        let alpha = M31::new(778899);
+
+        let y_step = CircleFriYStep::new(gen, f_p, f_conj, alpha);
+        let (lhs, t1, t2) = y_step.decompose();
+
+        // Construct Merkle tree where leaf 3 is SHA256(f_p || f_conj)
+        let mut leaves = Vec::new();
+        for i in 0..8 {
+            if i == 3 {
+                let mut data = Vec::new();
+                data.extend_from_slice(&f_p.value().to_le_bytes());
+                data.extend_from_slice(&f_conj.value().to_le_bytes());
+                leaves.push(Sha256::digest(&data).into());
+            } else {
+                leaves.push(Sha256::digest(format!("dummy_leaf_{}", i).as_bytes()).into());
+            }
+        }
+        let tree = MerkleTree::new(leaves);
+        let root = tree.root();
+        let proof = tree.prove(3);
+
+        let mut builder = ScriptBuilder::new();
+        CircleFriScript::emit_preimage_bound_round_verifier(&mut builder, tree.depth(), &root);
+
+        // ATTACK: Attacker tampers with f_p (e.g. 112234 instead of 112233)
+        let tampered_f_p = M31::new(112234);
+        let tampered_witness = CircleFriScript::create_preimage_bound_witness(
+            tampered_f_p, f_conj, &proof, lhs, t1, t2,
+        );
+
+        let mut vm = Vm::with_witness(tampered_witness);
+        let res = vm.execute(builder.as_bytes());
+        // Must fail with EqualVerify failure during Merkle path check!
+        assert!(res.is_err(), "Tampered evaluation MUST be rejected by preimage-bound verifier");
+    }
+
+    #[test]
+    fn test_soundness_preimage_bound_round_rejects_tampered_colinearity() {
+        use katamoto_field::circle::circle_subgroup_generator;
+        use katamoto_field::M31;
+
+        let gen = circle_subgroup_generator(3);
+        let f_p = M31::new(112233);
+        let f_conj = M31::new(445566);
+        let alpha = M31::new(778899);
+
+        let y_step = CircleFriYStep::new(gen, f_p, f_conj, alpha);
+        let (lhs, t1, _t2) = y_step.decompose();
+
+        // Construct Merkle tree where leaf 3 is SHA256(f_p || f_conj)
+        let mut leaves = Vec::new();
+        for i in 0..8 {
+            if i == 3 {
+                let mut data = Vec::new();
+                data.extend_from_slice(&f_p.value().to_le_bytes());
+                data.extend_from_slice(&f_conj.value().to_le_bytes());
+                leaves.push(Sha256::digest(&data).into());
+            } else {
+                leaves.push(Sha256::digest(format!("dummy_leaf_{}", i).as_bytes()).into());
+            }
+        }
+        let tree = MerkleTree::new(leaves);
+        let root = tree.root();
+        let proof = tree.prove(3);
+
+        let mut builder = ScriptBuilder::new();
+        CircleFriScript::emit_preimage_bound_round_verifier(&mut builder, tree.depth(), &root);
+
+        // ATTACK: Valid Merkle evaluation, but tampered colinearity T2
+        let tampered_t2 = M31::new(999999);
+        let tampered_witness = CircleFriScript::create_preimage_bound_witness(
+            f_p, f_conj, &proof, lhs, t1, tampered_t2,
+        );
+
+        let mut vm = Vm::with_witness(tampered_witness);
+        let res = vm.execute(builder.as_bytes());
+        // Must fail because LHS != T1 + tampered_T2
+        assert!(res.is_err(), "Tampered colinearity MUST be rejected");
+    }
+
+    #[test]
+    fn test_soundness_preimage_bound_round_valid_proof_succeeds() {
+        use katamoto_field::circle::circle_subgroup_generator;
+        use katamoto_field::M31;
+
+        let gen = circle_subgroup_generator(3);
+        let f_p = M31::new(112233);
+        let f_conj = M31::new(445566);
+        let alpha = M31::new(778899);
+
+        let y_step = CircleFriYStep::new(gen, f_p, f_conj, alpha);
+        let (lhs, t1, t2) = y_step.decompose();
+
+        // Construct Merkle tree where leaf 3 is SHA256(f_p || f_conj)
+        let mut leaves = Vec::new();
+        for i in 0..8 {
+            if i == 3 {
+                let mut data = Vec::new();
+                data.extend_from_slice(&f_p.value().to_le_bytes());
+                data.extend_from_slice(&f_conj.value().to_le_bytes());
+                leaves.push(Sha256::digest(&data).into());
+            } else {
+                leaves.push(Sha256::digest(format!("dummy_leaf_{}", i).as_bytes()).into());
+            }
+        }
+        let tree = MerkleTree::new(leaves);
+        let root = tree.root();
+        let proof = tree.prove(3);
+
+        let mut builder = ScriptBuilder::new();
+        CircleFriScript::emit_preimage_bound_round_verifier(&mut builder, tree.depth(), &root);
+
+        let valid_witness = CircleFriScript::create_preimage_bound_witness(
+            f_p, f_conj, &proof, lhs, t1, t2,
+        );
+
+        let mut vm = Vm::with_witness(valid_witness);
+        let ok = vm.execute(builder.as_bytes()).expect("Valid preimage-bound round must pass");
+        assert!(ok);
+        assert_eq!(vm.stack().last().unwrap(), &[1]);
+    }
 }
-
-
-

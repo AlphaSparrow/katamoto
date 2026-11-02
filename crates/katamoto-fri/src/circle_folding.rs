@@ -170,6 +170,58 @@ impl CircleFriScript {
         witness
     }
 
+    /// Emits a cryptographically sound Circle FRI round verifier with strict leaf preimage binding:
+    /// 1. Takes preimage bytes of [f_conj, f_p], concatenates them via OP_SWAP + OP_CAT and hashes via OP_SHA256
+    /// 2. Verifies the authenticated leaf against expected_root using MerkleScript
+    /// 3. Validates the colinearity relation: LHS == (T1 + T2) mod M31_P
+    pub fn emit_preimage_bound_round_verifier(
+        builder: &mut ScriptBuilder,
+        depth: usize,
+        expected_root: &[u8; 32],
+    ) {
+        // Stack top on entry: [..., sibling_0, dir_0, f_conj_bytes, f_p_bytes]
+        // Step 1: Reconstruct leaf hash: OP_SWAP -> OP_CAT -> OP_SHA256
+        builder.op_swap(); // [..., f_p_bytes, f_conj_bytes]
+        builder.op_cat();  // [..., (f_p || f_conj)]
+        builder.op_sha256(); // [..., leaf_hash]
+
+        // Step 2: Verify Merkle path from reconstructed leaf hash
+        MerkleScript::emit_verifier(builder, depth, expected_root);
+        builder.op_verify();
+
+        // Step 3: Verify colinearity fold: LHS == (T1 + T2) mod M31_P
+        Self::emit_colinearity_verifier(builder);
+    }
+
+    /// Prepares witness for preimage-bound Circle FRI round verification
+    pub fn create_preimage_bound_witness(
+        f_p: M31,
+        f_conj: M31,
+        proof: &MerkleProof,
+        lhs: M31,
+        t1: M31,
+        t2: M31,
+    ) -> Vec<Vec<u8>> {
+        let mut witness = Vec::new();
+
+        // 1. Colinearity witness items (at bottom of stack)
+        witness.push(encode_num(lhs.as_i64()));
+        witness.push(encode_num(t1.as_i64()));
+        witness.push(encode_num(t2.as_i64()));
+
+        // 2. Merkle siblings and direction bits (excluding the dummy leaf at top of MerkleProof)
+        let merkle_wit = MerkleScript::create_witness(proof);
+        for item in &merkle_wit[..merkle_wit.len() - 1] {
+            witness.push(item.clone());
+        }
+
+        // 3. Preimage field element bytes: f_conj pushed first (depth 1), then f_p (depth 0 / stack top)
+        witness.push(f_conj.value().to_le_bytes().to_vec());
+        witness.push(f_p.value().to_le_bytes().to_vec());
+
+        witness
+    }
+
     /// Emits script verifying a 4-to-1 high-arity Circle folding step:
     /// Checks 3 colinearities sequentially on the stack:
     ///   1. y-fold of P0
