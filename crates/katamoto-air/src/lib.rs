@@ -277,6 +277,33 @@ mod tests {
     }
 
     #[test]
+    fn test_circle_stark_4to1_skip_folding_taptree_compilation() {
+        let trace = ExecutionTrace::generate_fibonacci(16, 1, 1);
+        let num_circle_fri_queries = 4;
+
+        // Compile with 4-to-1 skip-folding
+        let (tap_tree, spends, telemetry) =
+            CircleStarkTapTreeCompiler::compile_circle_stark_with_arity(&trace, num_circle_fri_queries, true);
+
+        // Expect: boundary (1) + transition (1) + transcript (1) + batch merkle (1) + 4-to-1 skip folds (2) = 6 leaves
+        // (Standard 2-to-1 would produce 8 leaves: 4 folds + 4 overhead)
+        assert_eq!(tap_tree.leaves.len(), 6);
+        assert_eq!(spends.len(), 6);
+        assert_eq!(telemetry.total_leaves, 6);
+        assert!(telemetry.conforms_to_consensus);
+
+        // Execute every single leaf spend in the VM to verify correctness
+        for spend in &spends {
+            let mut vm = Vm::with_witness(spend.witness_items.clone());
+            let ok = vm
+                .execute(&spend.leaf_script)
+                .unwrap_or_else(|e| panic!("Leaf '{}' execution failed: {:?}", spend.leaf_name, e));
+            assert!(ok, "Leaf '{}' did not evaluate to true", spend.leaf_name);
+            assert_eq!(vm.stack().last().unwrap(), &[1]);
+        }
+    }
+
+    #[test]
     fn test_optimistic_bisection_dispute_game() {
         // Step 0: F_0 = 1, F_1 = 1
         // Step 1: F_1 = 1, F_2 = 2

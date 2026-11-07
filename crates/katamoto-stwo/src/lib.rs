@@ -13,8 +13,8 @@ pub use header_verifier::{
 
 pub use channel::{StwoChannel, StwoChannelScript, STWO_CHANNEL_INIT_SEED};
 pub use compiler::{
-    DualBackendCompiler, DualBackendSpendPackage, SettlementMetrics, StwoTapTreeCompiler,
-    StwoTapTreeSpendPackage, StwoTelemetry, VerificationBackend,
+    DualBackendCompiler, DualBackendSpendPackage, FoldingArity, SettlementMetrics,
+    StwoTapTreeCompiler, StwoTapTreeSpendPackage, StwoTelemetry, VerificationBackend,
 };
 pub use proof::{StwoFriProof, StwoFriQuery, StwoOodEvaluations, StwoProof, StwoProofError};
 pub use recursive_verifier::{
@@ -347,6 +347,93 @@ mod tests {
             package.telemetry.total_script_bytes,
             package.telemetry.max_witness_bytes
         );
+    }
+
+    #[test]
+    fn test_stwo_taptree_compilation_with_4to1_skip_folding() {
+        let col0 = MixedColumn::new((0..16).map(|i| M31::new(i * 10)).collect());
+        let col1 = MixedColumn::new((0..8).map(|i| M31::new(i * 20 + 1)).collect());
+        let columns = vec![col0, col1];
+        let mixed_tree = MixedBatchMerkleTree::new(columns.clone());
+        let trace_root = mixed_tree.root();
+
+        let pow_bits = 8;
+        let mut trace_pow_nonce = 0u64;
+        while !katamoto_fri::Transcript::verify_pow(&trace_root, trace_pow_nonce, pow_bits) {
+            trace_pow_nonce += 1;
+        }
+
+        let ood_evaluations = StwoOodEvaluations {
+            ood_point_x: QM31::from_u32(11, 0, 0, 0),
+            ood_point_y: QM31::from_u32(22, 0, 0, 0),
+            trace_evals: vec![QM31::from_u32(33, 0, 0, 0)],
+            quotient_eval: QM31::from_u32(44, 0, 0, 0),
+        };
+
+        // 2 queries in FRI proof
+        let fri_proof = StwoFriProof {
+            round_commitments: vec![[0x11u8; 32]],
+            queries: vec![
+                StwoFriQuery {
+                    query_idx: 1,
+                    f_p: M31::new(100),
+                    f_conj: M31::new(200),
+                    merkle_proof: MerkleProof {
+                        leaf: [0u8; 32],
+                        siblings: vec![],
+                        directions: vec![],
+                    },
+                },
+                StwoFriQuery {
+                    query_idx: 3,
+                    f_p: M31::new(300),
+                    f_conj: M31::new(400),
+                    merkle_proof: MerkleProof {
+                        leaf: [0u8; 32],
+                        siblings: vec![],
+                        directions: vec![],
+                    },
+                },
+            ],
+            final_poly_coefficients: vec![QM31::ONE],
+        };
+
+        let proof = StwoProof {
+            statement_hash: [0x55; 32],
+            preprocessed_root: None,
+            trace_root,
+            lookup_root: None,
+            quotient_root: [0x66; 32],
+            ood_evaluations,
+            fri_proof,
+            pow_nonce: trace_pow_nonce,
+            pow_bits,
+        };
+
+        // Compile with 4-to-1 skip folding (batches 2 queries into 1 skip-folding leaf)
+        let package_4to1 = StwoTapTreeCompiler::compile_with_arity(
+            &proof,
+            &columns,
+            3,
+            None,
+            None,
+            FoldingArity::FourToOne,
+        );
+
+        // Leaves: pow (1) + trace merkle (1) + ood quotient (1) + 4-to-1 fri fold (1) = 4 leaves
+        assert_eq!(package_4to1.tap_tree.leaves.len(), 4);
+        assert_eq!(package_4to1.spends.len(), 4);
+        assert!(package_4to1.telemetry.conforms_to_consensus);
+
+        // Verify every leaf spend in Bitcoin Script Vm
+        for spend in &package_4to1.spends {
+            let mut vm = Vm::with_witness(spend.witness_items.clone());
+            let ok = vm
+                .execute(&spend.leaf_script)
+                .unwrap_or_else(|e| panic!("Leaf '{}' execution failed: {:?}", spend.leaf_name, e));
+            assert!(ok, "Leaf '{}' did not evaluate to true", spend.leaf_name);
+            assert_eq!(vm.stack().last().unwrap(), &[1]);
+        }
     }
 
     #[test]

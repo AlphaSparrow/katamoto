@@ -252,6 +252,67 @@ impl CircleFriScript {
         witness
     }
 
+    /// Emits a cryptographically sound 4-to-1 skip-layer Circle FRI verifier with leaf preimage binding:
+    /// 1. Takes preimage bytes [v11, v10, v01, v00] and reconstructs the quad-leaf hash:
+    ///    OP_SWAP -> OP_CAT -> OP_TOALTSTACK -> OP_SWAP -> OP_CAT -> OP_FROMALTSTACK -> OP_SWAP -> OP_CAT -> OP_SHA256
+    /// 2. Verifies the authenticated quad-leaf against expected_root using MerkleScript
+    /// 3. Validates the 3 colinearity relations (y0, y1, x) across the skip layer:
+    ///    LHS == (T1 + T2) mod M31_P for each fold step.
+    pub fn emit_preimage_bound_4to1_verifier(
+        builder: &mut ScriptBuilder,
+        depth: usize,
+        expected_root: &[u8; 32],
+    ) {
+        // Stack top on entry: [..., sibling_0, dir_0, v11, v10, v01, v00]
+        // Step 1: Reconstruct quad-leaf hash from 4 field elements: (v00 || v01 || v10 || v11)
+        builder.op_swap();
+        builder.op_cat();
+        builder.op_toaltstack();
+        builder.op_swap();
+        builder.op_cat();
+        builder.op_fromaltstack();
+        builder.op_swap();
+        builder.op_cat();
+        builder.op_sha256();
+
+        // Step 2: Verify Merkle path from reconstructed quad-leaf hash
+        MerkleScript::emit_verifier(builder, depth, expected_root);
+        builder.op_verify();
+
+        // Step 3: Verify 4-to-1 colinearity folds (3 sequential colinearities)
+        Self::emit_4to1_colinearity_verifier(builder);
+    }
+
+    /// Prepares witness for preimage-bound 4-to-1 skip-layer Circle FRI verification
+    pub fn create_preimage_bound_4to1_witness(
+        step: &CircleFri4To1Step,
+        proof: &MerkleProof,
+    ) -> Vec<Vec<u8>> {
+        let mut witness = Vec::new();
+
+        // 1. Colinearity witness items (at bottom of stack)
+        let triples = step.decompose();
+        for triple in triples.iter().rev() {
+            witness.push(encode_num(triple.0.as_i64()));
+            witness.push(encode_num(triple.1.as_i64()));
+            witness.push(encode_num(triple.2.as_i64()));
+        }
+
+        // 2. Merkle siblings and direction bits (excluding dummy leaf at top of proof)
+        let merkle_wit = MerkleScript::create_witness(proof);
+        for item in &merkle_wit[..merkle_wit.len() - 1] {
+            witness.push(item.clone());
+        }
+
+        // 3. Preimage field element bytes: v11, v10, v01 pushed first, then v00 at stack top
+        witness.push(step.v11.value().to_le_bytes().to_vec());
+        witness.push(step.v10.value().to_le_bytes().to_vec());
+        witness.push(step.v01.value().to_le_bytes().to_vec());
+        witness.push(step.v00.value().to_le_bytes().to_vec());
+
+        witness
+    }
+
     /// Emits script verifying an 8-to-1 high-arity Circle folding step:
     /// Checks 7 colinearities sequentially across 3 folding layers:
     ///   - 4 y-folds

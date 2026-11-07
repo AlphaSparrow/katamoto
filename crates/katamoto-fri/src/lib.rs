@@ -465,6 +465,63 @@ mod tests {
     }
 
     #[test]
+    fn test_preimage_bound_4to1_circle_folding_with_merkle_auth() {
+        use katamoto_field::circle::circle_subgroup_generator;
+        use katamoto_field::M31;
+
+        // Subgroup generator of order 8
+        let gen = circle_subgroup_generator(3);
+        let p = gen;
+
+        // 4 sibling evaluations
+        let v00 = M31::new(123);
+        let v01 = M31::new(456);
+        let v10 = M31::new(789);
+        let v11 = M31::new(1011);
+        let alpha_y = M31::new(55);
+        let alpha_x = M31::new(77);
+
+        let step_4to1 = CircleFri4To1Step::new(p, v00, v01, v10, v11, alpha_y, alpha_x);
+
+        // Pack 4 siblings into 16-byte leaf preimage and compute leaf hash
+        let leaf_bytes = PackedCircleFriWitness::pack_4_siblings(v00, v01, v10, v11);
+        let leaf_hash: [u8; 32] = Sha256::digest(&leaf_bytes).into();
+
+        // Construct 4-leaf Merkle tree (depth 2)
+        let leaves = vec![
+            [0x11u8; 32],
+            leaf_hash,
+            [0x22u8; 32],
+            [0x33u8; 32],
+        ];
+        let tree = MerkleTree::new(leaves);
+        let root = tree.root();
+        let proof = tree.prove(1);
+
+        // Build Bitcoin Script verifier with preimage binding and 4-to-1 colinearity
+        let mut builder = ScriptBuilder::new();
+        CircleFriScript::emit_preimage_bound_4to1_verifier(&mut builder, tree.depth(), &root);
+
+        let witness = CircleFriScript::create_preimage_bound_4to1_witness(&step_4to1, &proof);
+        let mut vm = Vm::with_witness(witness.clone());
+        let ok = vm.execute(builder.as_bytes()).expect("Preimage-bound 4-to-1 verification failed");
+        assert!(ok);
+        assert_eq!(vm.stack().last().unwrap(), &[1]);
+
+        // Negative test: verify tampered field evaluation in leaf preimage is rejected
+        let mut tampered_witness = witness;
+        let last_idx = tampered_witness.len() - 1; // v00 is at the top of stack
+        tampered_witness[last_idx][0] ^= 0x01;
+        let mut tampered_vm = Vm::with_witness(tampered_witness);
+        let tampered_res = tampered_vm.execute(builder.as_bytes());
+        let passed = match tampered_res {
+            Ok(res) => res && tampered_vm.stack().last().map(|s| s.as_slice()) == Some(&[1]),
+            Err(_) => false,
+        };
+        assert!(!passed, "Tampered preimage evaluation must fail verification in Vm");
+    }
+
+    #[test]
     fn test_high_arity_8to1_circle_folding_with_witness_packing() {
         use katamoto_field::circle::circle_subgroup_generator;
         use katamoto_field::M31;

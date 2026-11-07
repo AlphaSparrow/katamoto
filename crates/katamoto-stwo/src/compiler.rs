@@ -5,7 +5,7 @@ use katamoto_air::taptree_compiler::LeafTelemetry;
 use katamoto_field::circle::circle_subgroup_generator;
 use katamoto_field::M31;
 use katamoto_fri::batch_merkle::{MixedBatchMerkleScript, MixedBatchMerkleTree, MixedColumn};
-use katamoto_fri::circle_folding::{CircleFriScript, CircleFriYStep};
+use katamoto_fri::circle_folding::{CircleFri4To1Step, CircleFriScript, CircleFriYStep};
 use katamoto_fri::taproot::{TapLeaf, TapTree, TaprootStarkSpend};
 use katamoto_fri::transcript::TranscriptScript;
 use katamoto_script::ScriptBuilder;
@@ -34,17 +34,45 @@ impl StwoTapTreeSpendPackage {
     }
 }
 
+/// Arity used for Circle FRI folding leaves in the TapTree
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FoldingArity {
+    #[default]
+    TwoToOne,
+    FourToOne,
+}
+
 /// Compiler that converts Stwo Circle STARK proofs and RISC-V execution traces
 /// into partitioned, consensus-compliant Bitcoin Taproot trees.
 pub struct StwoTapTreeCompiler;
 
 impl StwoTapTreeCompiler {
+    /// Compiles Stwo Circle STARK proof using default 2-to-1 Circle FRI folding
     pub fn compile(
         proof: &StwoProof,
         trace_columns: &[MixedColumn],
         query_row_idx: usize,
         riscv_statement: Option<&RiscvStatement>,
         riscv_step: Option<&RiscvStep>,
+    ) -> StwoTapTreeSpendPackage {
+        Self::compile_with_arity(
+            proof,
+            trace_columns,
+            query_row_idx,
+            riscv_statement,
+            riscv_step,
+            FoldingArity::TwoToOne,
+        )
+    }
+
+    /// Compiles Stwo Circle STARK proof with configurable folding arity (2-to-1 or 4-to-1 skip-folding)
+    pub fn compile_with_arity(
+        proof: &StwoProof,
+        trace_columns: &[MixedColumn],
+        query_row_idx: usize,
+        riscv_statement: Option<&RiscvStatement>,
+        riscv_step: Option<&RiscvStep>,
+        arity: FoldingArity,
     ) -> StwoTapTreeSpendPackage {
         let mut leaves = Vec::new();
         let mut spend_factories: Vec<(String, &'static str, Vec<Vec<u8>>, Vec<u8>)> = Vec::new();
@@ -106,27 +134,80 @@ impl StwoTapTreeCompiler {
             script_ood,
         ));
 
-        // 4. Leaves: Circle FRI Folding Steps
+        // 4. Leaves: Circle FRI Folding Steps (2-to-1 or 4-to-1 skip-folding)
         let gen = circle_subgroup_generator(3);
-        for (i, query) in proof.fri_proof.queries.iter().enumerate() {
-            let y_step = CircleFriYStep::new(gen, query.f_p, query.f_conj, M31::new(42 + i as u64));
-            let (fold_lhs, fold_t1, fold_t2) = y_step.decompose();
-            let mut b_fold = ScriptBuilder::new();
-            CircleFriScript::emit_colinearity_verifier(&mut b_fold);
-            let script_fold = b_fold.to_bytes();
-            let wit_fold = vec![
-                katamoto_script::builder::encode_num(fold_lhs.as_i64()),
-                katamoto_script::builder::encode_num(fold_t1.as_i64()),
-                katamoto_script::builder::encode_num(fold_t2.as_i64()),
-            ];
-            let leaf_name = format!("stwo_circle_fri_leaf_{}", i);
-            leaves.push(TapLeaf::new(leaf_name.clone(), script_fold.clone()));
-            spend_factories.push((
-                leaf_name,
-                "CircleFolding",
-                wit_fold,
-                script_fold,
-            ));
+        match arity {
+            FoldingArity::TwoToOne => {
+                for (i, query) in proof.fri_proof.queries.iter().enumerate() {
+                    let y_step = CircleFriYStep::new(gen, query.f_p, query.f_conj, M31::new(42 + i as u64));
+                    let (fold_lhs, fold_t1, fold_t2) = y_step.decompose();
+                    let mut b_fold = ScriptBuilder::new();
+                    CircleFriScript::emit_colinearity_verifier(&mut b_fold);
+                    let script_fold = b_fold.to_bytes();
+                    let wit_fold = vec![
+                        katamoto_script::builder::encode_num(fold_lhs.as_i64()),
+                        katamoto_script::builder::encode_num(fold_t1.as_i64()),
+                        katamoto_script::builder::encode_num(fold_t2.as_i64()),
+                    ];
+                    let leaf_name = format!("stwo_circle_fri_leaf_{}", i);
+                    leaves.push(TapLeaf::new(leaf_name.clone(), script_fold.clone()));
+                    spend_factories.push((
+                        leaf_name,
+                        "CircleFolding",
+                        wit_fold,
+                        script_fold,
+                    ));
+                }
+            }
+            FoldingArity::FourToOne => {
+                for (pair_idx, chunk) in proof.fri_proof.queries.chunks(2).enumerate() {
+                    if chunk.len() == 2 {
+                        let q0 = &chunk[0];
+                        let q1 = &chunk[1];
+                        let step_4to1 = CircleFri4To1Step::new(
+                            gen,
+                            q0.f_p,
+                            q0.f_conj,
+                            q1.f_p,
+                            q1.f_conj,
+                            M31::new(42 + pair_idx as u64),
+                            M31::new(84 + pair_idx as u64),
+                        );
+                        let mut b_fold = ScriptBuilder::new();
+                        CircleFriScript::emit_4to1_colinearity_verifier(&mut b_fold);
+                        let script_fold = b_fold.to_bytes();
+                        let wit_fold = CircleFriScript::create_4to1_witness(&step_4to1);
+                        let leaf_name = format!("stwo_circle_fri_4to1_leaf_{}", pair_idx);
+                        leaves.push(TapLeaf::new(leaf_name.clone(), script_fold.clone()));
+                        spend_factories.push((
+                            leaf_name,
+                            "CircleFolding4To1",
+                            wit_fold,
+                            script_fold,
+                        ));
+                    } else {
+                        let q = &chunk[0];
+                        let y_step = CircleFriYStep::new(gen, q.f_p, q.f_conj, M31::new(42 + pair_idx as u64));
+                        let (fold_lhs, fold_t1, fold_t2) = y_step.decompose();
+                        let mut b_fold = ScriptBuilder::new();
+                        CircleFriScript::emit_colinearity_verifier(&mut b_fold);
+                        let script_fold = b_fold.to_bytes();
+                        let wit_fold = vec![
+                            katamoto_script::builder::encode_num(fold_lhs.as_i64()),
+                            katamoto_script::builder::encode_num(fold_t1.as_i64()),
+                            katamoto_script::builder::encode_num(fold_t2.as_i64()),
+                        ];
+                        let leaf_name = format!("stwo_circle_fri_leaf_{}", pair_idx * 2);
+                        leaves.push(TapLeaf::new(leaf_name.clone(), script_fold.clone()));
+                        spend_factories.push((
+                            leaf_name,
+                            "CircleFolding",
+                            wit_fold,
+                            script_fold,
+                        ));
+                    }
+                }
+            }
         }
 
         // 5. Leaf: RISC-V Execution Step (if statement and step provided)
