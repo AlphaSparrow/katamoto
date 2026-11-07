@@ -25,7 +25,10 @@ pub use tx::{
     TaprootSighashPreimage, TestMempoolAccept, Transaction, TxIn, TxOut, Witness,
     MAX_STANDARD_TX_WEIGHT, SEQUENCE_FINAL,
 };
-pub use vm::{ExecutionStats, ScriptProfile, StackItem, Vm, VmError, MAX_ELEMENT_SIZE, MAX_STACK_SIZE};
+pub use vm::{
+    ExecutionStats, OpcodeExecutionTrace, ScriptProfile, StackItem, StackWatermarkConfig, Vm,
+    VmError, WatermarkReport, MAX_ELEMENT_SIZE, MAX_STACK_SIZE,
+};
 
 #[cfg(test)]
 mod tests {
