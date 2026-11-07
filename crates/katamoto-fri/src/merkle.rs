@@ -11,7 +11,7 @@ pub fn hash_node(left: &[u8], right: &[u8]) -> [u8; 32] {
     out
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MerkleProof {
     pub leaf: [u8; 32],
     pub siblings: Vec<[u8; 32]>,
