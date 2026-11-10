@@ -34,6 +34,8 @@ fn test_cli_post_quantum_vault_flow() {
 
     assert!(!spends.script_classical.is_empty());
     assert!(!spends.script_recovery.is_empty());
+    assert_eq!(spends.ctrl_classical.len(), 65);
+    assert_eq!(spends.ctrl_recovery.len(), 65);
     assert!(spends.script_recovery.len() < 520, "Recovery script must be under 520 bytes");
 
     // Execute Quantum Recovery Path in the Bitcoin Script VM
@@ -48,14 +50,38 @@ fn test_cli_post_quantum_vault_flow() {
     let vault_outpoint = OutPoint::new([0xee; 32], 0);
     let post_quantum_cold_storage = TxOut::op_return(b"PACT_QUANTUM_RESCUED", 0).script_pubkey;
     let rescue_tx = vault.build_emergency_rescue_tx(
-        vault_outpoint,
-        post_quantum_cold_storage,
+        vault_outpoint.clone(),
+        post_quantum_cold_storage.clone(),
         witness,
     );
 
     assert!(rescue_tx.validate_consensus_limits().is_ok());
     assert!(rescue_tx.weight() < 400_000, "Weight must be within standard mempool limits");
     assert_eq!(rescue_tx.outputs[0].value, 49_990_000); // 50M - 10k fee
+
+    // Execute Classical Timelocked Withdrawal in the Bitcoin Script VM
+    let dummy_sig = [0x55u8; 64];
+    let wit_classical = PactVault::create_classical_witness(&dummy_sig);
+    let mut vm_classical = Vm::with_witness(wit_classical.clone());
+    vm_classical.set_tx_sequence(timelock);
+    assert!(vm_classical.execute(&spends.script_classical).expect("Classical spend must succeed when timelocked sequence reached"));
+
+    // Build and validate classical withdrawal transaction
+    let dest_classical = TxOut::p2tr(&provisional_key, 49_990_000).script_pubkey;
+    let classical_tx = vault.build_classical_withdrawal_tx(
+        vault_outpoint.clone(),
+        dest_classical,
+        wit_classical,
+    );
+    assert!(classical_tx.validate_consensus_limits().is_ok());
+
+    // Build and validate cancel unvault transaction
+    let cancel_tx = vault.build_cancel_unvault_tx(
+        vault_outpoint,
+        post_quantum_cold_storage,
+        vec![],
+    );
+    assert!(cancel_tx.validate_consensus_limits().is_ok());
 }
 
 #[test]
