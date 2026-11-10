@@ -14,7 +14,8 @@ use katamoto_fri::{
     batch_merkle::{MixedBatchMerkleTree, MixedColumn},
     circle_folding::{CircleFriScript, CircleFriYStep},
     merkle::MerkleProof,
-    security::{AdaptiveSecuritySelector, FriSecurityConfig},
+    security::{AdaptiveSecuritySelector, FriSecurityConfig, ProximityRegime},
+    tradeoffs::{FriTradeoffMatrix, L1SettlementCostModel},
     BatchMerkleTree, FriQueryStep, FriRoundQuery, FriScript, MerkleScript, MerkleTree, TapLeaf,
     TapTree, Transcript, TranscriptScript,
 };
@@ -65,6 +66,7 @@ COMMANDS:
     export-descriptors [TYPE]          Export BIP-380/BIP-386 Taproot descriptors & Bech32m addresses (canonical/compressed/circle/dispute)
     pq-vault [SATOSHIS] [TIMELOCK]     Demonstrate Post-Quantum Recoverable Bitcoin Vault (PACT) under quantum attack
     verify-headers [COUNT]             Verify ZeroSync-style Bitcoin block header chain in zkVM & dispute TapTree
+    tradeoffs [SEC] [RATE] [LOG_D]     Analyze Pareto trade-off matrix & economic L1 settlement cost model
     help                               Print this help message
 "#);
 }
@@ -1215,6 +1217,10 @@ fn main() {
             println!("  [SUCCESS] ZeroSync block header chain verified end-to-end on Bitcoin Script!\n");
         }
 
+        "tradeoffs" => {
+            run_tradeoffs(&args);
+        }
+
         "bench" => {
             let json_mode = args.iter().any(|a| a == "--json");
             run_benchmarks(json_mode);
@@ -1595,4 +1601,85 @@ fn run_export_descriptors(desc_type: &str) {
     println!("    }}");
     println!("  ]");
     println!("\n  [SUCCESS] Taproot output descriptor exported successfully!\n");
+}
+
+fn run_tradeoffs(args: &[String]) {
+    let json_mode = args.iter().any(|a| a == "--json");
+    let non_flags: Vec<&String> = args.iter().filter(|a| !a.starts_with("--")).collect();
+    let target_security: u32 = non_flags.get(2).and_then(|s| s.parse().ok()).unwrap_or(96);
+    let feerate: f64 = non_flags.get(3).and_then(|s| s.parse().ok()).unwrap_or(15.0);
+    let log_domain: u32 = non_flags.get(4).and_then(|s| s.parse().ok()).unwrap_or(16);
+
+    let model = L1SettlementCostModel::new(feerate, 95_000.0);
+    let regime = ProximityRegime::ListDecodingCapacity;
+
+    let points = FriTradeoffMatrix::evaluate_grid(&model, target_security, log_domain, regime);
+    let pareto = FriTradeoffMatrix::extract_pareto_frontier(&points);
+
+    if json_mode {
+        println!("{{");
+        println!("  \"target_security_bits\": {},", target_security);
+        println!("  \"feerate_sat_per_vb\": {},", feerate);
+        println!("  \"log_domain_size\": {},", log_domain);
+        println!("  \"pareto_frontier_count\": {},", pareto.len());
+        println!("  \"pareto_points\": [");
+        for (i, p) in pareto.iter().enumerate() {
+            let comma = if i + 1 == pareto.len() { "" } else { "," };
+            println!(
+                "    {{\"arity\": {}, \"blowup\": {}, \"pow_bits\": {}, \"queries\": {}, \"vbytes\": {}, \"fee_sats\": {}, \"cost_usd\": {:.2}, \"prover_time_ms\": {:.2}}}{}",
+                p.arity, 1 << p.log_blowup, p.pow_bits, p.query_count, p.total_vbytes, p.settlement_cost_sats, p.settlement_cost_usd, p.estimated_prover_time_ms, comma
+            );
+        }
+        println!("  ]");
+        println!("}}");
+        return;
+    }
+
+    println!("\n==========================================================================================");
+    println!("  KATAMOTO: Multi-Dimensional Tradeoff Engine & Economic L1 Settlement Model");
+    println!("==========================================================================================");
+    println!("  Target Security:      {} bits (List-Decoding Capacity Bound)", target_security);
+    println!("  Mempool Feerate:      {:.1} sat/vB (Bitcoin L1)", feerate);
+    println!("  Execution Domain:     2^{} = {} rows", log_domain, 1 << log_domain);
+    println!("  Evaluated Frontier:   {} Pareto-Optimal Configurations", pareto.len());
+
+    println!("\n  ── Pareto Frontier: Prover Work vs L1 Settlement Cost ──");
+    println!("  ┌───────┬────────┬──────────┬─────────┬────────────┬──────────────┬────────────┬─────────────┬───────────┐");
+    println!("  │ Arity │ Blowup │ PoW Bits │ Queries │ Script (B) │ Witness (KB) │ Virt (vB)  │ Fee (sats)  │ Cost ($)  │");
+    println!("  ├───────┼────────┼──────────┼─────────┼────────────┼──────────────┼────────────┼─────────────┼───────────┤");
+
+    for p in &pareto {
+        let wit_kb = p.witness_bytes as f64 / 1024.0;
+        println!(
+            "  │ {:>5} │ {:>6} │ {:>8} │ {:>7} │ {:>10} │ {:>12.2} │ {:>10} │ {:>11} │ ${:>7.2} │",
+            format!("{}-to-1", p.arity),
+            format!("{}x", 1 << p.log_blowup),
+            p.pow_bits,
+            p.query_count,
+            p.script_bytes,
+            wit_kb,
+            p.total_vbytes,
+            p.settlement_cost_sats,
+            p.settlement_cost_usd
+        );
+    }
+    println!("  └───────┴────────┴──────────┴─────────┴────────────┴──────────────┴────────────┴─────────────┴───────────┘");
+
+    let cheapest = pareto.iter().min_by_key(|p| p.settlement_cost_sats).unwrap();
+    let fastest = pareto.iter().min_by_key(|p| p.prover_work_hashes).unwrap();
+
+    println!("\n  ── Frontier Optimality Analysis ──");
+    println!(
+        "  [LOWEST ON-CHAIN COST]   {}-to-1 / {}x blowup / {}b PoW -> {} vB, {} sats (${:.2}), prover: {:.1} ms",
+        cheapest.arity, 1 << cheapest.log_blowup, cheapest.pow_bits, cheapest.total_vbytes, cheapest.settlement_cost_sats, cheapest.settlement_cost_usd, cheapest.estimated_prover_time_ms
+    );
+    println!(
+        "  [FASTEST PROVER]         {}-to-1 / {}x blowup / {}b PoW -> {} vB, {} sats (${:.2}), prover: {:.1} ms",
+        fastest.arity, 1 << fastest.log_blowup, fastest.pow_bits, fastest.total_vbytes, fastest.settlement_cost_sats, fastest.settlement_cost_usd, fastest.estimated_prover_time_ms
+    );
+
+    let fee_saving = ((fastest.settlement_cost_sats as f64 - cheapest.settlement_cost_sats as f64)
+        / fastest.settlement_cost_sats as f64)
+        * 100.0;
+    println!("  [SAVINGS]                PoW grinding & high-arity folding reduces L1 settlement fee by {:.1}%!\n", fee_saving);
 }
