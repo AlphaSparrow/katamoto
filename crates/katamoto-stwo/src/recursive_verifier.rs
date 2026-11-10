@@ -1,5 +1,6 @@
 use crate::proof::{StwoFriProof, StwoFriQuery, StwoOodEvaluations, StwoProof};
 use crate::riscv::RiscvStatement;
+use katamoto_air::bisection::BitVm2DisputeGraph;
 use katamoto_air::quotient::{OodQuotientScript, OodQuotientStep};
 use katamoto_field::circle::circle_subgroup_generator;
 use katamoto_field::{qm31::QM31, M31};
@@ -524,5 +525,344 @@ impl CompressedCanonicalTapTree {
         }
 
         (tap_tree, spends)
+    }
+}
+
+/// Compiles a 1-round Optimistic Dispute TapTree for recursive state transition claims.
+/// In BitVM2 / Optimistic ZeroSync, an operator stakes a bond to assert an execution state chain.
+/// If valid, the operator withdraws the bond via a CSV-timelocked leaf.
+/// If an invalid state transition or statement binding is detected, any challenger can execute
+/// a dispute leaf in Tapscript, slashing the operator and claiming the bounty.
+pub struct RecursiveDisputeCompiler;
+
+impl RecursiveDisputeCompiler {
+    pub const LEAF_OPERATOR_SETTLEMENT: &'static str = "operator_timelock_settlement_leaf";
+    pub const LEAF_STATE_FRAUD: &'static str = "state_transition_fraud_leaf";
+    pub const LEAF_STATEMENT_TAMPER: &'static str = "statement_tamper_fraud_leaf";
+
+    /// Emits script that allows challenger to slash operator if claimed post-state does not equal SHA256(pre_state || step_data)
+    /// Stack input: `[challenger_sig, claimed_post_state, step_data, pre_state]` (pre_state on top)
+    pub fn emit_state_transition_fraud_leaf(builder: &mut ScriptBuilder, challenger_pubkey: &[u8; 32]) {
+        // Stack: [challenger_sig, claimed_post_state, step_data, pre_state]
+        builder.op_swap();   // [challenger_sig, claimed_post_state, pre_state, step_data]
+        builder.op_cat();    // [challenger_sig, claimed_post_state, (pre_state || step_data)]
+        builder.op_sha256(); // [challenger_sig, claimed_post_state, actual_post_state]
+        builder.op_equal();  // [challenger_sig, is_equal]
+        builder.op_not();    // [challenger_sig, is_not_equal]
+        builder.op_verify(); // asserts actual != claimed
+        builder.push_slice(challenger_pubkey);
+        builder.op_checksig();
+    }
+
+    /// Creates witness vector for state transition fraud dispute
+    pub fn create_state_transition_fraud_witness(
+        pre_state: [u8; 32],
+        step_data: &[u8],
+        claimed_post_state: [u8; 32],
+        challenger_sig: [u8; 64],
+    ) -> Vec<Vec<u8>> {
+        vec![
+            challenger_sig.to_vec(),
+            claimed_post_state.to_vec(),
+            step_data.to_vec(),
+            pre_state.to_vec(),
+        ]
+    }
+
+    /// Emits script that allows challenger to slash operator if claimed statement hash does not equal SHA256(initial || final || program_digest)
+    /// Stack input: `[challenger_sig, claimed_statement_hash, program_digest, final_state, initial_state]`
+    pub fn emit_statement_tamper_leaf(builder: &mut ScriptBuilder, challenger_pubkey: &[u8; 32]) {
+        // Stack: [challenger_sig, claimed_stmt_hash, program_digest, final_state, initial_state]
+        builder.op_swap();   // [..., claimed, program_digest, initial_state, final_state]
+        builder.op_cat();    // [..., claimed, program_digest, (initial || final)]
+        builder.op_swap();   // [..., claimed, (initial || final), program_digest]
+        builder.op_cat();    // [..., claimed, (initial || final || program_digest)]
+        builder.op_sha256(); // [challenger_sig, claimed, actual_hash]
+        builder.op_equal();
+        builder.op_not();
+        builder.op_verify();
+        builder.push_slice(challenger_pubkey);
+        builder.op_checksig();
+    }
+
+    /// Creates witness vector for statement tamper fraud dispute
+    pub fn create_statement_tamper_witness(
+        initial_state: [u8; 32],
+        final_state: [u8; 32],
+        program_digest: [u8; 32],
+        claimed_statement_hash: [u8; 32],
+        challenger_sig: [u8; 64],
+    ) -> Vec<Vec<u8>> {
+        vec![
+            challenger_sig.to_vec(),
+            claimed_statement_hash.to_vec(),
+            program_digest.to_vec(),
+            final_state.to_vec(),
+            initial_state.to_vec(),
+        ]
+    }
+
+    /// Emits script that allows operator to reclaim bond after relative timelock (BIP-112 CSV)
+    pub fn emit_operator_settlement_leaf(
+        builder: &mut ScriptBuilder,
+        operator_pubkey: &[u8; 32],
+        dispute_timelock: u32,
+    ) {
+        builder.push_int(dispute_timelock as i64);
+        builder.op_csv();
+        builder.op_drop();
+        builder.push_slice(operator_pubkey);
+        builder.op_checksig();
+    }
+
+    /// Creates witness vector for operator settlement spend
+    pub fn create_operator_settlement_witness(operator_sig: [u8; 64]) -> Vec<Vec<u8>> {
+        vec![operator_sig.to_vec()]
+    }
+
+    /// Compiles a 1-round State Transition Dispute Game into a TapTree
+    pub fn compile_state_transition_dispute(
+        operator_pubkey: [u8; 32],
+        challenger_pubkey: [u8; 32],
+        bond_satoshis: u64,
+        dispute_timelock_blocks: u32,
+        pre_state: [u8; 32],
+        step_data: &[u8],
+        claimed_post_state: [u8; 32],
+    ) -> (BitVm2DisputeGraph, TapTree, Vec<TaprootStarkSpend>) {
+        let mut hasher = Sha256::new();
+        hasher.update(&pre_state);
+        hasher.update(step_data);
+        hasher.update(&claimed_post_state);
+        let stmt_hash: [u8; 32] = hasher.finalize().into();
+
+        let graph = BitVm2DisputeGraph::new(
+            operator_pubkey,
+            challenger_pubkey,
+            bond_satoshis,
+            dispute_timelock_blocks,
+            stmt_hash,
+        );
+
+        let mut leaves = Vec::new();
+        let mut spend_factories = Vec::new();
+
+        // Leaf 0: Operator settlement after CSV timelock
+        let mut b_settle = ScriptBuilder::new();
+        Self::emit_operator_settlement_leaf(&mut b_settle, &operator_pubkey, dispute_timelock_blocks);
+        let script_settle = b_settle.to_bytes();
+        let wit_settle = Self::create_operator_settlement_witness([0x11u8; 64]);
+        leaves.push(TapLeaf::new(Self::LEAF_OPERATOR_SETTLEMENT, script_settle.clone()));
+        spend_factories.push((Self::LEAF_OPERATOR_SETTLEMENT.to_string(), wit_settle, script_settle));
+
+        // Leaf 1: State transition fraud slashing leaf
+        let mut b_fraud = ScriptBuilder::new();
+        Self::emit_state_transition_fraud_leaf(&mut b_fraud, &challenger_pubkey);
+        let script_fraud = b_fraud.to_bytes();
+        let wit_fraud = Self::create_state_transition_fraud_witness(
+            pre_state,
+            step_data,
+            claimed_post_state,
+            [0x22u8; 64],
+        );
+        leaves.push(TapLeaf::new(Self::LEAF_STATE_FRAUD, script_fraud.clone()));
+        spend_factories.push((Self::LEAF_STATE_FRAUD.to_string(), wit_fraud, script_fraud));
+
+        let tap_tree = TapTree::new(leaves);
+        let internal_nums_key = [0x02u8; 32];
+        let mut spends = Vec::new();
+
+        for (idx, (name, wit, script)) in spend_factories.into_iter().enumerate() {
+            let ctrl = tap_tree.control_block(idx, &internal_nums_key);
+            spends.push(TaprootStarkSpend::new(&name, wit, script, ctrl));
+        }
+
+        (graph, tap_tree, spends)
+    }
+
+    /// Compiles a Statement Tamper Dispute Game into a TapTree
+    pub fn compile_statement_tamper_dispute(
+        operator_pubkey: [u8; 32],
+        challenger_pubkey: [u8; 32],
+        bond_satoshis: u64,
+        dispute_timelock_blocks: u32,
+        initial_state: [u8; 32],
+        final_state: [u8; 32],
+        program_digest: [u8; 32],
+        claimed_statement_hash: [u8; 32],
+    ) -> (BitVm2DisputeGraph, TapTree, Vec<TaprootStarkSpend>) {
+        let mut hasher = Sha256::new();
+        hasher.update(&initial_state);
+        hasher.update(&final_state);
+        hasher.update(&program_digest);
+        hasher.update(&claimed_statement_hash);
+        let stmt_hash: [u8; 32] = hasher.finalize().into();
+
+        let graph = BitVm2DisputeGraph::new(
+            operator_pubkey,
+            challenger_pubkey,
+            bond_satoshis,
+            dispute_timelock_blocks,
+            stmt_hash,
+        );
+
+        let mut leaves = Vec::new();
+        let mut spend_factories = Vec::new();
+
+        // Leaf 0: Operator settlement leaf
+        let mut b_settle = ScriptBuilder::new();
+        Self::emit_operator_settlement_leaf(&mut b_settle, &operator_pubkey, dispute_timelock_blocks);
+        let script_settle = b_settle.to_bytes();
+        let wit_settle = Self::create_operator_settlement_witness([0x11u8; 64]);
+        leaves.push(TapLeaf::new(Self::LEAF_OPERATOR_SETTLEMENT, script_settle.clone()));
+        spend_factories.push((Self::LEAF_OPERATOR_SETTLEMENT.to_string(), wit_settle, script_settle));
+
+        // Leaf 1: Statement tamper slashing leaf
+        let mut b_tamper = ScriptBuilder::new();
+        Self::emit_statement_tamper_leaf(&mut b_tamper, &challenger_pubkey);
+        let script_tamper = b_tamper.to_bytes();
+        let wit_tamper = Self::create_statement_tamper_witness(
+            initial_state,
+            final_state,
+            program_digest,
+            claimed_statement_hash,
+            [0x22u8; 64],
+        );
+        leaves.push(TapLeaf::new(Self::LEAF_STATEMENT_TAMPER, script_tamper.clone()));
+        spend_factories.push((Self::LEAF_STATEMENT_TAMPER.to_string(), wit_tamper, script_tamper));
+
+        let tap_tree = TapTree::new(leaves);
+        let internal_nums_key = [0x02u8; 32];
+        let mut spends = Vec::new();
+
+        for (idx, (name, wit, script)) in spend_factories.into_iter().enumerate() {
+            let ctrl = tap_tree.control_block(idx, &internal_nums_key);
+            spends.push(TaprootStarkSpend::new(&name, wit, script, ctrl));
+        }
+
+        (graph, tap_tree, spends)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use katamoto_script::Vm;
+
+    #[test]
+    fn test_recursive_dispute_state_transition_fraud_slashing_in_vm() {
+        let op_key = [0x55u8; 32];
+        let ch_key = [0x66u8; 32];
+        let pre_state = [0x11u8; 32];
+        let step_data = [0x99u8; 16];
+        // Operator falsely claims post_state is 0xdeadbeef...
+        let fake_post_state = [0xfeu8; 32];
+
+        let (_graph, tree, spends) = RecursiveDisputeCompiler::compile_state_transition_dispute(
+            op_key,
+            ch_key,
+            100_000_000,
+            144,
+            pre_state,
+            &step_data,
+            fake_post_state,
+        );
+
+        assert_eq!(tree.leaves.len(), 2);
+        assert_eq!(spends.len(), 2);
+
+        // Spend Leaf 1 (fraud slashing leaf) in Vm: Challenger proves fake_post_state != actual
+        let fraud_spend = &spends[1];
+        let mut vm = Vm::with_witness(fraud_spend.witness_items.clone());
+        let ok = vm.execute(&fraud_spend.leaf_script).expect("Fraud slashing leaf execution failed");
+        assert!(ok);
+        assert_eq!(vm.stack().last().unwrap(), &[1]);
+    }
+
+    #[test]
+    fn test_recursive_dispute_honest_state_transition_rejects_slashing() {
+        let op_key = [0x55u8; 32];
+        let ch_key = [0x66u8; 32];
+        let pre_state = [0x11u8; 32];
+        let step_data = [0x99u8; 16];
+        // Operator honestly committed the real hash: SHA256(pre_state || step_data)
+        let mut hasher = Sha256::new();
+        hasher.update(&pre_state);
+        hasher.update(&step_data);
+        let real_post_state: [u8; 32] = hasher.finalize().into();
+
+        let (_graph, _tree, spends) = RecursiveDisputeCompiler::compile_state_transition_dispute(
+            op_key,
+            ch_key,
+            100_000_000,
+            144,
+            pre_state,
+            &step_data,
+            real_post_state,
+        );
+
+        // Challenger tries to slash honest operator: MUST fail VerifyFailed!
+        let fraud_spend = &spends[1];
+        let mut vm = Vm::with_witness(fraud_spend.witness_items.clone());
+        let res = vm.execute(&fraud_spend.leaf_script);
+        assert!(res.is_err(), "Honest operator must not be slashed");
+    }
+
+    #[test]
+    fn test_recursive_dispute_statement_tamper_slashing_in_vm() {
+        let op_key = [0x55u8; 32];
+        let ch_key = [0x66u8; 32];
+        let initial_state = [0x11u8; 32];
+        let final_state = [0x22u8; 32];
+        let prog_digest = [0x33u8; 32];
+        let tampered_statement_hash = [0xffu8; 32]; // fake statement hash
+
+        let (_graph, _tree, spends) = RecursiveDisputeCompiler::compile_statement_tamper_dispute(
+            op_key,
+            ch_key,
+            50_000_000,
+            144,
+            initial_state,
+            final_state,
+            prog_digest,
+            tampered_statement_hash,
+        );
+
+        let tamper_spend = &spends[1];
+        let mut vm = Vm::with_witness(tamper_spend.witness_items.clone());
+        let ok = vm.execute(&tamper_spend.leaf_script).expect("Tamper slashing leaf failed");
+        assert!(ok);
+        assert_eq!(vm.stack().last().unwrap(), &[1]);
+    }
+
+    #[test]
+    fn test_recursive_dispute_operator_timelock_settlement_in_vm() {
+        let op_key = [0x55u8; 32];
+        let ch_key = [0x66u8; 32];
+        let pre_state = [0x11u8; 32];
+        let step_data = [0x99u8; 16];
+        let fake_post_state = [0xfeu8; 32];
+
+        let (_graph, _tree, spends) = RecursiveDisputeCompiler::compile_state_transition_dispute(
+            op_key,
+            ch_key,
+            100_000_000,
+            144,
+            pre_state,
+            &step_data,
+            fake_post_state,
+        );
+
+        let settle_spend = &spends[0];
+        // 1. Without sequence set: CSV must fail
+        let mut vm_fail = Vm::with_witness(settle_spend.witness_items.clone());
+        assert!(vm_fail.execute(&settle_spend.leaf_script).is_err());
+
+        // 2. With sequence >= 144: CSV succeeds!
+        let mut vm_pass = Vm::with_witness(settle_spend.witness_items.clone());
+        vm_pass.set_tx_sequence(144);
+        let ok = vm_pass.execute(&settle_spend.leaf_script).expect("Operator settlement failed");
+        assert!(ok);
+        assert_eq!(vm_pass.stack().last().unwrap(), &[1]);
     }
 }

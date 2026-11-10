@@ -14,6 +14,7 @@ use katamoto_stwo::{
     compiler::{DualBackendCompiler, VerificationBackend},
     header_verifier::{BitcoinHeader, HeaderChain, HeaderDisputeCompiler},
     proof::{StwoFriProof, StwoFriQuery, StwoOodEvaluations, StwoProof},
+    RecursiveDisputeCompiler,
 };
 use sha2::{Digest, Sha256};
 
@@ -290,4 +291,43 @@ fn test_cli_bip380_descriptor_export_and_bech32m() {
     assert!(raw_desc.starts_with("tr(0202"));
     assert!(raw_desc.contains("raw(51)"));
     assert!(raw_desc.contains("raw(52)"));
+}
+
+#[test]
+fn test_cli_recursive_dispute_game_and_slashing() {
+    let operator_key = [0x33u8; 32];
+    let challenger_key = [0x44u8; 32];
+    let pre_state = [0xa1u8; 32];
+    let step_data = [0xb2u8; 32];
+    let invalid_post_state = [0xc3u8; 32]; // operator lied
+
+    let (graph, tree, spends) = RecursiveDisputeCompiler::compile_state_transition_dispute(
+        operator_key,
+        challenger_key,
+        100_000_000,
+        144,
+        pre_state,
+        &step_data,
+        invalid_post_state,
+    );
+
+    assert_eq!(tree.leaves.len(), 2);
+    assert_eq!(spends.len(), 2);
+    assert_eq!(graph.bond_satoshis, 100_000_000);
+    assert_eq!(graph.dispute_timelock_blocks, 144);
+
+    // 1. Challenger slashes operator in Vm via state transition fraud leaf
+    let fraud_spend = &spends[1];
+    let mut vm_challenger = Vm::with_witness(fraud_spend.witness_items.clone());
+    let ok = vm_challenger.execute(&fraud_spend.leaf_script).expect("Challenger slashing execution failed");
+    assert!(ok);
+    assert_eq!(vm_challenger.stack().last().unwrap(), &[1]);
+
+    // 2. Operator settlement leaf succeeds only after CSV timelock
+    let settle_spend = &spends[0];
+    let mut vm_operator = Vm::with_witness(settle_spend.witness_items.clone());
+    vm_operator.set_tx_sequence(144);
+    let ok_settle = vm_operator.execute(&settle_spend.leaf_script).expect("Operator settlement failed");
+    assert!(ok_settle);
+    assert_eq!(vm_operator.stack().last().unwrap(), &[1]);
 }
