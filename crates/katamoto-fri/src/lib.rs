@@ -11,8 +11,8 @@ pub use batch_merkle::{
     BatchMerkleScript, BatchMerkleTree, MixedBatchMerkleScript, MixedBatchMerkleTree, MixedColumn,
 };
 pub use circle_folding::{
-    CircleFri16To1Step, CircleFri4To1Step, CircleFri8To1Step, CircleFriRoundQuery,
-    CircleFriScript, CircleFriXStep, CircleFriYStep, PackedCircleFriWitness,
+    CircleFri16To1Step, CircleFri32To1Step, CircleFri4To1Step, CircleFri8To1Step,
+    CircleFriRoundQuery, CircleFriScript, CircleFriXStep, CircleFriYStep, PackedCircleFriWitness,
 };
 pub use folding::{FriQueryStep, FriRoundQuery, FriScript};
 pub use merkle::{hash_node, MerkleProof, MerkleScript, MerkleTree};
@@ -783,6 +783,73 @@ mod tests {
 
         let mut vm = Vm::with_witness(valid_witness);
         let ok = vm.execute(builder.as_bytes()).expect("Valid preimage-bound round must pass");
+        assert!(ok);
+        assert_eq!(vm.stack().last().unwrap(), &[1]);
+    }
+
+    #[test]
+    fn test_high_arity_32to1_circle_folding_with_witness_packing() {
+        use katamoto_field::circle::circle_subgroup_generator;
+        use katamoto_field::M31;
+
+        let gen = circle_subgroup_generator(7); // order 128
+        let point_a = gen;
+
+        let vals_a: [M31; 16] = [
+            M31::new(10), M31::new(20), M31::new(30), M31::new(40),
+            M31::new(50), M31::new(60), M31::new(70), M31::new(80),
+            M31::new(11), M31::new(21), M31::new(31), M31::new(41),
+            M31::new(51), M31::new(61), M31::new(71), M31::new(81),
+        ];
+
+        let vals_b: [M31; 16] = [
+            M31::new(15), M31::new(25), M31::new(35), M31::new(45),
+            M31::new(55), M31::new(65), M31::new(75), M31::new(85),
+            M31::new(16), M31::new(26), M31::new(36), M31::new(46),
+            M31::new(56), M31::new(66), M31::new(76), M31::new(86),
+        ];
+
+        let mut all_32 = [M31::ZERO; 32];
+        all_32[..16].copy_from_slice(&vals_a);
+        all_32[16..].copy_from_slice(&vals_b);
+        let packed_32 = PackedCircleFriWitness::pack_32_siblings(&all_32);
+        assert_eq!(packed_32.len(), 128);
+
+        let alpha_y = M31::new(13);
+        let alpha_x = M31::new(29);
+        let alpha_pi = M31::new(47);
+        let alpha_pi2 = M31::new(71);
+        let alpha_pi3 = M31::new(97);
+
+        let step32 = CircleFri32To1Step::new(
+            point_a, vals_a, vals_b, alpha_y, alpha_x, alpha_pi, alpha_pi2, alpha_pi3,
+        );
+
+        let triples = step32.decompose();
+        assert_eq!(triples.len(), 31);
+        for (i, t) in triples.iter().enumerate() {
+            assert_eq!(t.0, t.1 + t.2, "32-to-1 Triple {} failed", i);
+        }
+
+        let mut builder = ScriptBuilder::new();
+        CircleFriScript::emit_32to1_colinearity_verifier(&mut builder);
+
+        // Empirical finding: 32-to-1 folding produces 621 bytes of Tapscript.
+        // This exceeds the 520-byte standard relay limit (MAX_SCRIPT_ELEMENT_SIZE = 520),
+        // proving that 16-to-1 (284 bytes) is the maximal single-leaf folding arity relayable
+        // on standard Bitcoin nodes, while 32-to-1 requires 2-leaf partitioned decomposition.
+        let script_bytes = builder.as_bytes();
+        assert_eq!(
+            script_bytes.len(),
+            621,
+            "32-to-1 script is exactly 621 bytes (demarcating standard relay boundary)"
+        );
+
+        let witness = CircleFriScript::create_32to1_witness(&step32);
+        assert_eq!(witness.len(), 93); // 31 * 3 = 93 elements
+
+        let mut vm = Vm::with_witness(witness);
+        let ok = vm.execute(script_bytes).expect("32-to-1 folding VM execution failed");
         assert!(ok);
         assert_eq!(vm.stack().last().unwrap(), &[1]);
     }

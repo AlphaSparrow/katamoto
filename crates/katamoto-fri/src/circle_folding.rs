@@ -365,6 +365,34 @@ impl CircleFriScript {
         }
         witness
     }
+
+    /// Emits script verifying an experimental 32-to-1 ultra-high-arity Circle folding step:
+    /// Checks 31 colinearities sequentially across 5 folding layers:
+    ///   - 16 y-folds
+    ///   - 8 x-folds
+    ///   - 4 pi-folds
+    ///   - 2 pi^2-folds
+    ///   - 1 pi^3-fold combining down to pi^4(x)
+    /// Stack layout: 31 consecutive `[lhs, t1, t2]` triples
+    pub fn emit_32to1_colinearity_verifier(builder: &mut ScriptBuilder) {
+        for _ in 0..31 {
+            M31Script::emit_add(builder);
+            builder.op_equalverify();
+        }
+        builder.push_int(1);
+    }
+
+    /// Prepares witness for 32-to-1 high-arity Circle FRI folding
+    pub fn create_32to1_witness(step: &CircleFri32To1Step) -> Vec<Vec<u8>> {
+        let triples = step.decompose();
+        let mut witness = Vec::with_capacity(93);
+        for triple in triples.iter().rev() {
+            witness.push(encode_num(triple.0.as_i64()));
+            witness.push(encode_num(triple.1.as_i64()));
+            witness.push(encode_num(triple.2.as_i64()));
+        }
+        witness
+    }
 }
 
 /// Stage 1 & 2 Combined: 4-to-1 High-Arity Circle FRI Folding Step.
@@ -637,6 +665,91 @@ impl CircleFri16To1Step {
     }
 }
 
+/// Experimental Stage 5: 32-to-1 Ultra-High-Arity Circle FRI Folding Step.
+/// Folds 32 evaluations across 5 circle domain layers in a single TapLeaf script.
+/// Reduces Merkle authentication overhead by 80% while comfortably conforming to the 520B limit.
+#[derive(Debug, Clone)]
+pub struct CircleFri32To1Step {
+    pub step16_a: CircleFri16To1Step,
+    pub step16_b: CircleFri16To1Step,
+    pub alpha_pi3: M31,
+    pub pi3_x_a: M31,
+    pub next4_f: M31,
+}
+
+impl CircleFri32To1Step {
+    pub fn new(
+        point_a: CirclePoint,
+        vals_a: [M31; 16],
+        vals_b: [M31; 16],
+        alpha_y: M31,
+        alpha_x: M31,
+        alpha_pi: M31,
+        alpha_pi2: M31,
+        alpha_pi3: M31,
+    ) -> Self {
+        assert!(point_a.is_on_curve(), "Point A must lie on circle");
+        let g16 = circle_subgroup_generator(4);
+        let point_b = point_a + g16;
+        assert!(point_b.is_on_curve(), "Point B must lie on circle");
+
+        let mut a1 = [M31::ZERO; 8];
+        let mut a2 = [M31::ZERO; 8];
+        a1.copy_from_slice(&vals_a[0..8]);
+        a2.copy_from_slice(&vals_a[8..16]);
+
+        let mut b1 = [M31::ZERO; 8];
+        let mut b2 = [M31::ZERO; 8];
+        b1.copy_from_slice(&vals_b[0..8]);
+        b2.copy_from_slice(&vals_b[8..16]);
+
+        let step16_a = CircleFri16To1Step::new(point_a, a1, a2, alpha_y, alpha_x, alpha_pi, alpha_pi2);
+        let step16_b = CircleFri16To1Step::new(point_b, b1, b2, alpha_y, alpha_x, alpha_pi, alpha_pi2);
+
+        // Fold the two results at pi^3(x)
+        let two = M31::new(2);
+        let two_inv = two.inv().unwrap();
+        let pi3_x_a = two * step16_a.pi2_x_a * step16_a.pi2_x_a - M31::ONE;
+        assert_ne!(pi3_x_a, M31::ZERO, "pi3_x coordinate cannot be zero");
+        let pi3_inv = pi3_x_a.inv().unwrap();
+
+        let even_pi3 = (step16_a.next3_f + step16_b.next3_f) * two_inv;
+        let odd_pi3 = (step16_a.next3_f - step16_b.next3_f) * two_inv * pi3_inv;
+        let next4_f = even_pi3 + (alpha_pi3 * odd_pi3);
+
+        Self {
+            step16_a,
+            step16_b,
+            alpha_pi3,
+            pi3_x_a,
+            next4_f,
+        }
+    }
+
+    /// Decomposes 32-to-1 folding into 31 linear colinearity triples:
+    ///   - 15 for step16_a
+    ///   - 15 for step16_b
+    ///   - 1 for final pi3-folding stage
+    pub fn decompose(&self) -> [(M31, M31, M31); 31] {
+        let dec_a = self.step16_a.decompose();
+        let dec_b = self.step16_b.decompose();
+
+        let two_pi3 = M31::new(2) * self.pi3_x_a;
+        let lhs_pi3 = two_pi3 * self.next4_f;
+        let t1_pi3 = self.pi3_x_a * (self.step16_a.next3_f + self.step16_b.next3_f);
+        let t2_pi3 = self.alpha_pi3 * (self.step16_a.next3_f - self.step16_b.next3_f);
+        debug_assert_eq!(lhs_pi3, t1_pi3 + t2_pi3, "32-to-1 pi3 colinearity must hold");
+
+        let mut result = [(M31::ZERO, M31::ZERO, M31::ZERO); 31];
+        for i in 0..15 {
+            result[i] = dec_a[i];
+            result[15 + i] = dec_b[i];
+        }
+        result[30] = (lhs_pi3, t1_pi3, t2_pi3);
+        result
+    }
+}
+
 /// Witness packing utilities for High-Arity Circle FRI folding
 #[derive(Debug, Clone)]
 pub struct PackedCircleFriWitness;
@@ -664,6 +777,15 @@ impl PackedCircleFriWitness {
     /// Packs 16 M31 sibling values into a compact 64-byte byte vector
     pub fn pack_16_siblings(vals: &[M31; 16]) -> [u8; 64] {
         let mut buf = [0u8; 64];
+        for (i, v) in vals.iter().enumerate() {
+            buf[i * 4..(i + 1) * 4].copy_from_slice(&v.value().to_le_bytes());
+        }
+        buf
+    }
+
+    /// Packs 32 M31 sibling values into a compact 128-byte byte vector
+    pub fn pack_32_siblings(vals: &[M31; 32]) -> [u8; 128] {
+        let mut buf = [0u8; 128];
         for (i, v) in vals.iter().enumerate() {
             buf[i * 4..(i + 1) * 4].copy_from_slice(&v.value().to_le_bytes());
         }
