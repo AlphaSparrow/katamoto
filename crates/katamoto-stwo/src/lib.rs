@@ -7,8 +7,8 @@ pub mod riscv;
 
 pub use header_verifier::{
     BitcoinHeader, DifficultyRetargeter, HeaderChain, HeaderDisputeCompiler, HeaderScript, U256,
-    DIFFICULTY_ADJUSTMENT_INTERVAL, MAX_TIMESPAN, MIN_TIMESPAN, POW_LIMIT_NBITS,
-    POW_TARGET_SPACING, POW_TARGET_TIMESPAN,
+    DIFFICULTY_ADJUSTMENT_INTERVAL, MAX_FUTURE_BLOCK_TIME, MAX_TIMESPAN, MEDIAN_TIME_SPAN,
+    MIN_TIMESPAN, POW_LIMIT_NBITS, POW_TARGET_SPACING, POW_TARGET_TIMESPAN,
 };
 
 pub use channel::{StwoChannel, StwoChannelScript, STWO_CHANNEL_INIT_SEED};
