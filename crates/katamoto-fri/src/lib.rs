@@ -16,7 +16,8 @@ pub use circle_folding::{
 pub use folding::{FriQueryStep, FriRoundQuery, FriScript};
 pub use merkle::{hash_node, MerkleProof, MerkleScript, MerkleTree};
 pub use security::{
-    AdaptiveSecuritySelector, FriSecurityConfig, QueryDomainSampler, SettlementEstimate,
+    AdaptiveSecuritySelector, FriSecurityConfig, ListDecodingCalculator, ProofSizeBudgetOptimizer,
+    ProximityRegime, QueryDomainSampler, SettlementEstimate,
 };
 pub use taproot::{tagged_hash, TapLeaf, TapTree, TaprootStarkSpend, TAPSCRIPT_LEAF_VERSION};
 pub use transcript::{Transcript, TranscriptScript, TRANSCRIPT_INIT_SEED};

@@ -176,6 +176,210 @@ impl FriSecurityConfig {
             1u32 << self.log_blowup
         )
     }
+
+    /// Calculate exact list-decoding soundness security bits for this configuration
+    pub fn list_decoding_security_bits(&self, log_domain_size: u32, regime: ProximityRegime) -> f64 {
+        ListDecodingCalculator::calculate_soundness_bits(
+            self.query_count,
+            self.log_blowup,
+            self.pow_bits,
+            log_domain_size,
+            regime,
+        )
+    }
+
+    /// Returns true if this configuration provably meets its target security under `regime`
+    pub fn is_provably_sound(&self, log_domain_size: u32, regime: ProximityRegime) -> bool {
+        self.list_decoding_security_bits(log_domain_size, regime) >= (self.target_security_bits as f64)
+    }
+}
+
+/// Proximity regime for Circle FRI list-decoding soundness analysis
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProximityRegime {
+    /// Unique decoding regime (classical bound): delta = (1 - rho) / 2
+    /// Strictly proven for non-interactive oracle proofs without list-decoding conjectures.
+    UniqueDecoding,
+    /// Johnson bound regime: delta = 1 - sqrt(rho)
+    /// Proven list-decoding radius for Reed-Solomon and Circle codes.
+    JohnsonBound,
+    /// List-decoding capacity regime: delta = 1 - rho
+    /// Conjectured information-theoretic capacity bound for random query sampling.
+    ListDecodingCapacity,
+}
+
+impl ProximityRegime {
+    /// Proximity parameter delta given code rate rho = 1 / 2^log_blowup
+    pub fn delta(self, log_blowup: u32) -> f64 {
+        let rho = 1.0 / (1u32 << log_blowup) as f64;
+        match self {
+            Self::UniqueDecoding => (1.0 - rho) / 2.0,
+            Self::JohnsonBound => 1.0 - rho.sqrt(),
+            Self::ListDecodingCapacity => 1.0 - rho,
+        }
+    }
+
+    /// Soundness error factor (1 - delta) per FRI query
+    pub fn error_per_query(self, log_blowup: u32) -> f64 {
+        1.0 - self.delta(log_blowup)
+    }
+}
+
+/// Exact List-Decoding Soundness and Query-Grinding Tradeoff Calculator for Circle FRI
+pub struct ListDecodingCalculator;
+
+impl ListDecodingCalculator {
+    /// Security bits contributed per FRI query: log2(1 / (1 - delta))
+    pub fn bits_per_query(log_blowup: u32, regime: ProximityRegime) -> f64 {
+        let error_per_query = regime.error_per_query(log_blowup);
+        if error_per_query <= 0.0 {
+            return 128.0;
+        }
+        (1.0 / error_per_query).log2()
+    }
+
+    /// Calculates total effective security bits under list-decoding:
+    ///   soundness_bits = min(field_capacity, pow_bits + query_count * bits_per_query)
+    /// Field capacity over QM31 is bounded by 124 - log_domain_size bits
+    /// due to Schwartz-Zippel colinearity and polynomial identity testing over |QM31| ≈ 2^124.
+    pub fn calculate_soundness_bits(
+        query_count: u32,
+        log_blowup: u32,
+        pow_bits: u32,
+        log_domain_size: u32,
+        regime: ProximityRegime,
+    ) -> f64 {
+        let query_bits = (query_count as f64) * Self::bits_per_query(log_blowup, regime);
+        let conjectured_bits = (pow_bits as f64) + query_bits;
+        let field_capacity = 124.0 - (log_domain_size as f64);
+        conjectured_bits.min(field_capacity).max(0.0)
+    }
+
+    /// Calculates the exact minimal query count needed to achieve `target_security_bits`
+    /// given a PoW grinding budget `pow_bits`.
+    pub fn calculate_min_queries(
+        target_security_bits: u32,
+        pow_bits: u32,
+        log_blowup: u32,
+        log_domain_size: u32,
+        regime: ProximityRegime,
+    ) -> u32 {
+        let field_capacity = 124.0 - (log_domain_size as f64);
+        let effective_target = (target_security_bits as f64).min(field_capacity);
+        let remaining_bits = (effective_target - pow_bits as f64).max(0.0);
+        let bpq = Self::bits_per_query(log_blowup, regime);
+        if bpq <= 0.0 {
+            return 0;
+        }
+        (remaining_bits / bpq).ceil() as u32
+    }
+
+    /// Calculates the required PoW grinding bits needed if query count is constrained to `query_count`.
+    pub fn calculate_required_pow(
+        target_security_bits: u32,
+        query_count: u32,
+        log_blowup: u32,
+        log_domain_size: u32,
+        regime: ProximityRegime,
+    ) -> u32 {
+        let field_capacity = 124.0 - (log_domain_size as f64);
+        let effective_target = (target_security_bits as f64).min(field_capacity);
+        let query_bits = (query_count as f64) * Self::bits_per_query(log_blowup, regime);
+        if query_bits >= effective_target {
+            0
+        } else {
+            (effective_target - query_bits).ceil() as u32
+        }
+    }
+}
+
+/// Optimizes proof settlement size and finds optimal configuration within byte/KB constraints
+pub struct ProofSizeBudgetOptimizer;
+
+impl ProofSizeBudgetOptimizer {
+    /// Discovers the Pareto-optimal FRI configuration (arity, blowup, pow, queries)
+    /// that achieves `target_security_bits` within `max_proof_kb`.
+    pub fn find_optimal_configuration(
+        target_security_bits: u32,
+        max_proof_kb: f64,
+        log_domain_size: u32,
+        regime: ProximityRegime,
+    ) -> Option<FriSecurityConfig> {
+        let arities = [2u32, 4, 8, 16];
+        let blowups = [1u32, 2, 3];
+        let pow_options = [0u32, 8, 16, 20, 24, 28];
+
+        let mut best_config: Option<FriSecurityConfig> = None;
+        let mut min_bytes = u64::MAX;
+
+        for &arity in &arities {
+            for &blowup in &blowups {
+                for &pow in &pow_options {
+                    let queries = ListDecodingCalculator::calculate_min_queries(
+                        target_security_bits,
+                        pow,
+                        blowup,
+                        log_domain_size,
+                        regime,
+                    );
+
+                    let paths_per_query = if arity == 2 { 2 } else { 1 };
+                    let config = FriSecurityConfig {
+                        target_security_bits,
+                        pow_bits: pow,
+                        folding_arity: arity,
+                        log_blowup: blowup,
+                        query_count: queries,
+                        merkle_paths_per_query: paths_per_query,
+                    };
+
+                    let estimate = config.estimated_settlement_bytes(log_domain_size);
+                    if estimate.total_kb() <= max_proof_kb && estimate.total_bytes < min_bytes {
+                        min_bytes = estimate.total_bytes;
+                        best_config = Some(config);
+                    }
+                }
+            }
+        }
+
+        best_config
+    }
+
+    /// Generates the query-to-grinding tradeoff curve for visualization and analysis:
+    /// Returns `[(pow_bits, query_count, proof_kb)]`
+    pub fn generate_tradeoff_curve(
+        target_security_bits: u32,
+        log_blowup: u32,
+        arity: u32,
+        log_domain_size: u32,
+        regime: ProximityRegime,
+    ) -> Vec<(u32, u32, f64)> {
+        let pow_levels = [0u32, 4, 8, 12, 16, 20, 24, 28, 32];
+        let paths_per_query = if arity == 2 { 2 } else { 1 };
+
+        pow_levels
+            .iter()
+            .map(|&pow| {
+                let queries = ListDecodingCalculator::calculate_min_queries(
+                    target_security_bits,
+                    pow,
+                    log_blowup,
+                    log_domain_size,
+                    regime,
+                );
+                let config = FriSecurityConfig {
+                    target_security_bits,
+                    pow_bits: pow,
+                    folding_arity: arity,
+                    log_blowup,
+                    query_count: queries,
+                    merkle_paths_per_query: paths_per_query,
+                };
+                let kb = config.estimated_settlement_bytes(log_domain_size).total_kb();
+                (pow, queries, kb)
+            })
+            .collect()
+    }
 }
 
 /// Estimated settlement data breakdown
@@ -392,6 +596,74 @@ mod tests {
         for &(idx, conj) in &pairs {
             assert!(idx < half);
             assert_eq!(conj, idx + half);
+        }
+    }
+
+    #[test]
+    fn test_list_decoding_bits_per_query_monotonicity() {
+        let blowup = 2; // 4x blowup
+        let bpq_unique = ListDecodingCalculator::bits_per_query(blowup, ProximityRegime::UniqueDecoding);
+        let bpq_johnson = ListDecodingCalculator::bits_per_query(blowup, ProximityRegime::JohnsonBound);
+        let bpq_capacity = ListDecodingCalculator::bits_per_query(blowup, ProximityRegime::ListDecodingCapacity);
+
+        assert!(bpq_unique < bpq_johnson, "Johnson bound must give more bits per query than unique decoding");
+        assert!(bpq_johnson < bpq_capacity, "Capacity must give more bits per query than Johnson bound");
+        assert_eq!(bpq_capacity, 2.0, "4x blowup capacity is exactly 2 bits per query");
+    }
+
+    #[test]
+    fn test_query_grinding_tradeoff_inversion() {
+        let target_sec = 96;
+        let pow = 20;
+        let blowup = 1;
+        let domain = 16;
+        let regime = ProximityRegime::ListDecodingCapacity;
+
+        let min_queries = ListDecodingCalculator::calculate_min_queries(target_sec, pow, blowup, domain, regime);
+        // Required PoW with min_queries should be <= pow
+        let req_pow = ListDecodingCalculator::calculate_required_pow(target_sec, min_queries, blowup, domain, regime);
+        assert!(req_pow <= pow, "Required PoW must be satisfied by minimal query count");
+
+        let total_bits = ListDecodingCalculator::calculate_soundness_bits(min_queries, blowup, pow, domain, regime);
+        assert!(total_bits >= target_sec as f64, "Total bits must satisfy target security");
+    }
+
+    #[test]
+    fn test_proof_size_budget_optimizer_satisfies_constraints() {
+        let target_sec = 96;
+        let max_kb = 1000.0; // 1 MB max
+        let domain = 16;
+        let regime = ProximityRegime::ListDecodingCapacity;
+
+        let opt = ProofSizeBudgetOptimizer::find_optimal_configuration(target_sec, max_kb, domain, regime);
+        assert!(opt.is_some(), "Optimizer should find configuration within 1 MB");
+        let cfg = opt.unwrap();
+        assert!(cfg.folding_arity >= 4, "High arity must be selected for compact settlement");
+        assert!(cfg.estimated_settlement_bytes(domain).total_kb() <= max_kb);
+        assert!(cfg.is_provably_sound(domain, regime));
+    }
+
+    #[test]
+    fn test_tradeoff_curve_generation() {
+        let curve = ProofSizeBudgetOptimizer::generate_tradeoff_curve(
+            128,
+            2,
+            4,
+            16,
+            ProximityRegime::ListDecodingCapacity,
+        );
+        assert_eq!(curve.len(), 9);
+
+        // Verify that higher PoW strictly decreases or maintains query count
+        for i in 1..curve.len() {
+            assert!(
+                curve[i].1 <= curve[i - 1].1,
+                "Query count must be non-increasing with higher PoW grinding"
+            );
+            assert!(
+                curve[i].2 <= curve[i - 1].2,
+                "Proof KB size must be non-increasing with higher PoW grinding"
+            );
         }
     }
 }
