@@ -224,6 +224,10 @@ pub enum VmError {
     UnmatchedConditional,
     #[error("Script evaluated to FALSE or empty stack")]
     ScriptFailed,
+    #[error("LockTime verification failed (BIP-65 CLTV)")]
+    LockTimeFailed,
+    #[error("Sequence verification failed (BIP-112 CSV)")]
+    SequenceFailed,
     #[error("Disabled or forbidden opcode executed: 0x{0:02x}")]
     DisabledOpcode(u8),
 }
@@ -301,6 +305,8 @@ pub struct Vm {
     cond_stack: Vec<bool>,
     stats: ExecutionStats,
     tx_sighash: Option<[u8; 32]>,
+    tx_locktime: Option<u32>,
+    tx_sequence: Option<u32>,
     watermark_config: StackWatermarkConfig,
     opcode_traces: Vec<OpcodeExecutionTrace>,
 }
@@ -313,6 +319,8 @@ impl Vm {
             cond_stack: Vec::new(),
             stats: ExecutionStats::default(),
             tx_sighash: None,
+            tx_locktime: None,
+            tx_sequence: None,
             watermark_config: StackWatermarkConfig::default(),
             opcode_traces: Vec::new(),
         }
@@ -325,6 +333,8 @@ impl Vm {
             cond_stack: Vec::new(),
             stats: ExecutionStats::default(),
             tx_sighash: None,
+            tx_locktime: None,
+            tx_sequence: None,
             watermark_config: config,
             opcode_traces: Vec::new(),
         }
@@ -358,6 +368,8 @@ impl Vm {
                 ..Default::default()
             },
             tx_sighash: None,
+            tx_locktime: None,
+            tx_sequence: None,
             watermark_config: config,
             opcode_traces: Vec::new(),
         }
@@ -389,6 +401,22 @@ impl Vm {
 
     pub fn tx_sighash(&self) -> Option<[u8; 32]> {
         self.tx_sighash
+    }
+
+    pub fn set_tx_locktime(&mut self, locktime: u32) {
+        self.tx_locktime = Some(locktime);
+    }
+
+    pub fn tx_locktime(&self) -> Option<u32> {
+        self.tx_locktime
+    }
+
+    pub fn set_tx_sequence(&mut self, sequence: u32) {
+        self.tx_sequence = Some(sequence);
+    }
+
+    pub fn tx_sequence(&self) -> Option<u32> {
+        self.tx_sequence
     }
 
     pub fn profile(&self) -> ScriptProfile {
@@ -908,6 +936,67 @@ impl Vm {
                         return Err(VmError::VerifyFailed);
                     }
                 }
+                Opcode::OpCheckLockTimeVerify => {
+                    let top = self.stack.last().ok_or(VmError::StackUnderflow { needed: 1, available: 0 })?;
+                    // BIP-342: CLTV accepts up to 5-byte ScriptNum (unsigned 32-bit integer)
+                    let n = decode_num(top, 5)
+                        .map_err(|e| VmError::ScriptNumError(e.to_string()))?;
+                    if n < 0 {
+                        return Err(VmError::LockTimeFailed);
+                    }
+                    let locktime_req = n as u64;
+                    let tx_lock = self.tx_locktime.ok_or(VmError::LockTimeFailed)? as u64;
+
+                    // BIP-65: Threshold 500,000,000 separates block height from UNIX timestamp
+                    const LOCKTIME_THRESHOLD: u64 = 500_000_000;
+                    if (locktime_req < LOCKTIME_THRESHOLD && tx_lock >= LOCKTIME_THRESHOLD)
+                        || (locktime_req >= LOCKTIME_THRESHOLD && tx_lock < LOCKTIME_THRESHOLD)
+                    {
+                        return Err(VmError::LockTimeFailed);
+                    }
+
+                    if locktime_req > tx_lock {
+                        return Err(VmError::LockTimeFailed);
+                    }
+
+                    // Sequence of 0xffffffff disables nLockTime in transaction inputs
+                    if let Some(seq) = self.tx_sequence {
+                        if seq == 0xffffffff {
+                            return Err(VmError::LockTimeFailed);
+                        }
+                    }
+                }
+                Opcode::OpCheckSequenceVerify => {
+                    let top = self.stack.last().ok_or(VmError::StackUnderflow { needed: 1, available: 0 })?;
+                    // BIP-342: CSV accepts up to 5-byte ScriptNum (unsigned 32-bit integer)
+                    let n = decode_num(top, 5)
+                        .map_err(|e| VmError::ScriptNumError(e.to_string()))?;
+                    if n < 0 {
+                        return Err(VmError::SequenceFailed);
+                    }
+                    let seq_req = n as u32;
+
+                    // BIP-112: If sequence disable flag bit (1 << 31) is set, CSV is a no-op
+                    const SEQUENCE_LOCKTIME_DISABLE_FLAG: u32 = 1 << 31;
+                    if (seq_req & SEQUENCE_LOCKTIME_DISABLE_FLAG) == 0 {
+                        let tx_seq = self.tx_sequence.ok_or(VmError::SequenceFailed)?;
+                        if (tx_seq & SEQUENCE_LOCKTIME_DISABLE_FLAG) != 0 {
+                            return Err(VmError::SequenceFailed);
+                        }
+
+                        // BIP-112: Type flag bit (1 << 22) indicates 512-second intervals vs block height
+                        const SEQUENCE_LOCKTIME_TYPE_FLAG: u32 = 1 << 22;
+                        if (seq_req & SEQUENCE_LOCKTIME_TYPE_FLAG) != (tx_seq & SEQUENCE_LOCKTIME_TYPE_FLAG) {
+                            return Err(VmError::SequenceFailed);
+                        }
+
+                        // Mask value is 16 bits (0x0000ffff)
+                        const SEQUENCE_LOCKTIME_MASK: u32 = 0x0000ffff;
+                        if (seq_req & SEQUENCE_LOCKTIME_MASK) > (tx_seq & SEQUENCE_LOCKTIME_MASK) {
+                            return Err(VmError::SequenceFailed);
+                        }
+                    }
+                }
                 _ => return Err(VmError::DisabledOpcode(byte)),
             }
 
@@ -1149,5 +1238,92 @@ mod tests {
         let profile = vm.profile();
         assert!(profile.near_stack_limit);
         assert!(!profile.stack_overflow_risk);
+    }
+
+    #[test]
+    fn test_bip65_checklocktimeverify_consensus_rules() {
+        let mut builder = ScriptBuilder::new();
+        builder.push_int(500);
+        builder.op_cltv();
+        builder.op_drop();
+        builder.push_int(1);
+
+        // Case 1: tx_locktime equals requirement (500 == 500)
+        let mut vm = Vm::new();
+        vm.set_tx_locktime(500);
+        vm.set_tx_sequence(0);
+        let ok = vm.execute(builder.as_bytes()).expect("CLTV should succeed when locktime matches");
+        assert!(ok);
+        assert_eq!(vm.stack().last().unwrap(), &[1]);
+
+        // Case 2: tx_locktime exceeds requirement (600 >= 500)
+        let mut vm2 = Vm::new();
+        vm2.set_tx_locktime(600);
+        vm2.set_tx_sequence(0);
+        assert!(vm2.execute(builder.as_bytes()).unwrap());
+
+        // Case 3: tx_locktime less than requirement (400 < 500)
+        let mut vm3 = Vm::new();
+        vm3.set_tx_locktime(400);
+        vm3.set_tx_sequence(0);
+        let err3 = vm3.execute(builder.as_bytes()).unwrap_err();
+        assert_eq!(err3, VmError::LockTimeFailed);
+
+        // Case 4: Final sequence (0xffffffff) disables locktime
+        let mut vm4 = Vm::new();
+        vm4.set_tx_locktime(600);
+        vm4.set_tx_sequence(0xffffffff);
+        let err4 = vm4.execute(builder.as_bytes()).unwrap_err();
+        assert_eq!(err4, VmError::LockTimeFailed);
+
+        // Case 5: Locktime type mismatch (height < 500M vs timestamp >= 500M)
+        let mut b_mismatch = ScriptBuilder::new();
+        b_mismatch.push_int(600_000_000); // Timestamp
+        b_mismatch.op_cltv();
+        let mut vm5 = Vm::new();
+        vm5.set_tx_locktime(500); // Block height
+        let err5 = vm5.execute(b_mismatch.as_bytes()).unwrap_err();
+        assert_eq!(err5, VmError::LockTimeFailed);
+    }
+
+    #[test]
+    fn test_bip112_checksequenceverify_consensus_rules() {
+        let mut builder = ScriptBuilder::new();
+        builder.push_int(144); // 144 blocks
+        builder.op_csv();
+        builder.op_drop();
+        builder.push_int(1);
+
+        // Case 1: tx_sequence equals requirement (144 == 144)
+        let mut vm = Vm::new();
+        vm.set_tx_sequence(144);
+        assert!(vm.execute(builder.as_bytes()).expect("CSV should succeed when sequence matches"));
+
+        // Case 2: tx_sequence exceeds requirement (288 >= 144)
+        let mut vm2 = Vm::new();
+        vm2.set_tx_sequence(288);
+        assert!(vm2.execute(builder.as_bytes()).unwrap());
+
+        // Case 3: tx_sequence less than requirement (100 < 144)
+        let mut vm3 = Vm::new();
+        vm3.set_tx_sequence(100);
+        let err3 = vm3.execute(builder.as_bytes()).unwrap_err();
+        assert_eq!(err3, VmError::SequenceFailed);
+
+        // Case 4: tx_sequence has disable flag set (1 << 31)
+        let mut vm4 = Vm::new();
+        vm4.set_tx_sequence(144 | (1u32 << 31));
+        let err4 = vm4.execute(builder.as_bytes()).unwrap_err();
+        assert_eq!(err4, VmError::SequenceFailed);
+
+        // Case 5: Requirement has disable flag set -> no-op per BIP-112
+        let mut b_disabled = ScriptBuilder::new();
+        b_disabled.push_int((144u32 | (1u32 << 31)) as i64);
+        b_disabled.op_csv();
+        b_disabled.op_drop();
+        b_disabled.push_int(1);
+        let mut vm5 = Vm::new();
+        vm5.set_tx_sequence(0); // Sequence is 0, but CSV is disabled
+        assert!(vm5.execute(b_disabled.as_bytes()).unwrap());
     }
 }

@@ -176,6 +176,10 @@ impl ScriptBuilder {
 
     pub fn op_checksig(&mut self) -> &mut Self { self.push_opcode(Opcode::OpCheckSig) }
     pub fn op_checksigverify(&mut self) -> &mut Self { self.push_opcode(Opcode::OpCheckSigVerify) }
+    pub fn op_checklocktimeverify(&mut self) -> &mut Self { self.push_opcode(Opcode::OpCheckLockTimeVerify) }
+    pub fn op_cltv(&mut self) -> &mut Self { self.push_opcode(Opcode::OpCheckLockTimeVerify) }
+    pub fn op_checksequenceverify(&mut self) -> &mut Self { self.push_opcode(Opcode::OpCheckSequenceVerify) }
+    pub fn op_csv(&mut self) -> &mut Self { self.push_opcode(Opcode::OpCheckSequenceVerify) }
 
     pub fn extend(&mut self, other: &ScriptBuilder) -> &mut Self {
         self.bytes.extend_from_slice(&other.bytes);

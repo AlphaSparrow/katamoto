@@ -89,6 +89,10 @@ pub enum Opcode {
     OpHash256 = 0xaa,
     OpCheckSig = 0xac,
     OpCheckSigVerify = 0xad,
+
+    // Locktime & Relative Timelock Verification (BIP-65 & BIP-112)
+    OpCheckLockTimeVerify = 0xb1,
+    OpCheckSequenceVerify = 0xb2,
 }
 
 impl Opcode {
@@ -177,6 +181,8 @@ impl Opcode {
             0xaa => Some(Opcode::OpHash256),
             0xac => Some(Opcode::OpCheckSig),
             0xad => Some(Opcode::OpCheckSigVerify),
+            0xb1 => Some(Opcode::OpCheckLockTimeVerify),
+            0xb2 => Some(Opcode::OpCheckSequenceVerify),
             _ => None,
         }
     }
