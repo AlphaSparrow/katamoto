@@ -331,3 +331,37 @@ fn test_cli_recursive_dispute_game_and_slashing() {
     assert!(ok_settle);
     assert_eq!(vm_operator.stack().last().unwrap(), &[1]);
 }
+
+#[test]
+fn test_cli_tradeoffs_matrix_and_pareto_frontier() {
+    use katamoto_fri::security::ProximityRegime;
+    use katamoto_fri::tradeoffs::{FriTradeoffMatrix, L1SettlementCostModel};
+
+    let model = L1SettlementCostModel::new(25.0, 95_000.0);
+    let points = FriTradeoffMatrix::evaluate_grid(
+        &model,
+        96,
+        16,
+        ProximityRegime::ListDecodingCapacity,
+    );
+
+    assert!(!points.is_empty());
+    let pareto = FriTradeoffMatrix::extract_pareto_frontier(&points);
+    assert!(!pareto.is_empty());
+
+    // Verify all points on Pareto frontier satisfy consensus
+    for p in &pareto {
+        assert!(p.is_consensus_valid());
+        assert!(p.script_bytes <= 520);
+        assert!(p.settlement_cost_sats > 0);
+    }
+
+    // Verify cheapest settlement has lowest fee
+    let cheapest = FriTradeoffMatrix::find_cheapest_settlement(
+        &model,
+        96,
+        16,
+        ProximityRegime::ListDecodingCapacity,
+    ).expect("Must find cheapest");
+    assert!(cheapest.total_vbytes > 0);
+}

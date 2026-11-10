@@ -4,6 +4,7 @@ pub mod folding;
 pub mod merkle;
 pub mod security;
 pub mod taproot;
+pub mod tradeoffs;
 pub mod transcript;
 
 pub use batch_merkle::{
@@ -20,6 +21,7 @@ pub use security::{
     ProximityRegime, QueryDomainSampler, SettlementEstimate,
 };
 pub use taproot::{tagged_hash, TapLeaf, TapTree, TaprootStarkSpend, TAPSCRIPT_LEAF_VERSION};
+pub use tradeoffs::{FriTradeoffMatrix, L1SettlementCostModel, TradeoffPoint};
 pub use transcript::{Transcript, TranscriptScript, TRANSCRIPT_INIT_SEED};
 
 #[cfg(test)]
