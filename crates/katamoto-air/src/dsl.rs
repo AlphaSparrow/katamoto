@@ -336,6 +336,116 @@ impl RangeCheck16Gadget {
     }
 }
 
+/// Vectorized 16-Bit Range Check AIR Gadget with BIP-347 OP_CAT hint packing.
+/// Verifies that an array of N 16-bit integers lie in [0, 65535] and match
+/// a packed byte preimage commitment using OP_CAT and OP_SIZE.
+pub struct VectorizedRangeCheck16Gadget;
+
+impl VectorizedRangeCheck16Gadget {
+    /// Packs a slice of 16-bit values into a single contiguous byte array in little-endian order.
+    pub fn pack_values(values: &[u16]) -> Vec<u8> {
+        let mut packed = Vec::with_capacity(values.len() * 2);
+        for &v in values {
+            packed.extend_from_slice(&v.to_le_bytes());
+        }
+        packed
+    }
+
+    /// Decomposes a 16-bit value into 8-bit low and high limbs: `val = lo + 256 * hi`
+    pub fn decompose(val: u16) -> (u8, u8) {
+        ((val & 0xff) as u8, (val >> 8) as u8)
+    }
+
+    /// Emits Bitcoin Script that verifies a batch of `count` 16-bit range checks
+    /// with OP_CAT hint packing.
+    ///
+    /// Stack layout on entry:
+    ///   `[expected_packed, chunk_N-1, v_N-1, lo_N-1, hi_N-1, ..., chunk_0, v_0, lo_0, hi_0]`
+    ///
+    /// In each step:
+    ///   - Checks `0 <= hi_i < 256` and `0 <= lo_i < 256` via `OP_WITHIN`
+    ///   - Checks `v_i == lo_i + 256 * hi_i`
+    ///   - Checks `len(chunk_i) == 2` via `OP_SIZE`
+    /// Leaves `chunk_i` on stack.
+    ///
+    /// After processing all `count` items:
+    ///   `[expected_packed, chunk_0, chunk_1, ..., chunk_{count-1}]`
+    /// Then `(count - 1)` `OP_CAT`s merge all chunks into `actual_packed`.
+    /// Finally `OP_EQUALVERIFY` asserts `actual_packed == expected_packed`.
+    /// Leaves `1` (TRUE) on stack.
+    pub fn emit_verifier(builder: &mut ScriptBuilder, count: usize) {
+        assert!(count >= 1, "Vectorized range check requires at least 1 element");
+
+        for _ in 0..count {
+            // Stack top: hi_i
+            builder.op_dup();
+            builder.push_int(0);
+            builder.push_int(256);
+            builder.op_within();
+            builder.op_verify(); // 0 <= hi_i < 256
+
+            // Compute 256 * hi_i via 8 doublings
+            for _ in 0..8 {
+                builder.op_dup();
+                builder.op_add();
+            }
+
+            // Stack: [... chunk_i, v_i, lo_i, 256 * hi_i]
+            builder.op_swap();
+            builder.op_dup();
+            builder.push_int(0);
+            builder.push_int(256);
+            builder.op_within();
+            builder.op_verify(); // 0 <= lo_i < 256
+
+            // Stack: [... chunk_i, v_i, 256 * hi_i, lo_i]
+            builder.op_add(); // [... chunk_i, v_i, lo_i + 256 * hi_i]
+            builder.op_equalverify(); // [... chunk_i]
+
+            // Verify chunk_i has exactly 2 bytes
+            builder.op_size();
+            builder.push_int(2);
+            builder.op_equalverify();
+
+            // Stash verified chunk on altstack
+            builder.op_toaltstack();
+        }
+
+        // Pull chunks back to main stack in order chunk_0, chunk_1, ..., chunk_{count-1}
+        for _ in 0..count {
+            builder.op_fromaltstack();
+        }
+
+        // Stack: [expected_packed, chunk_0, chunk_1, ..., chunk_{count-1}]
+        for _ in 1..count {
+            builder.op_cat();
+        }
+
+        builder.op_equalverify();
+        builder.push_int(1);
+    }
+
+    /// Prepares witness for vectorized 16-bit range check.
+    /// Pushes `expected_packed` first (bottom of stack), then elements in forward order
+    /// so that element 0 is at the top of the altstack after processing.
+    pub fn create_witness(values: &[u16]) -> Vec<Vec<u8>> {
+        let expected_packed = Self::pack_values(values);
+        let mut witness = Vec::with_capacity(1 + values.len() * 4);
+        witness.push(expected_packed);
+
+        for &val in values {
+            let (lo, hi) = Self::decompose(val);
+            let chunk = val.to_le_bytes().to_vec();
+            witness.push(chunk);
+            witness.push(encode_num(val as i64));
+            witness.push(encode_num(lo as i64));
+            witness.push(encode_num(hi as i64));
+        }
+
+        witness
+    }
+}
+
 /// Bitwise Operations AIR Gadget for 8-bit XOR and AND lookups
 pub struct BitwiseOpsGadget;
 

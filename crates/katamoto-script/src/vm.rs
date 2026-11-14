@@ -795,6 +795,13 @@ impl Vm {
                     }
                 }
 
+                // Size
+                Opcode::OpSize => {
+                    let top = self.stack.last().ok_or(VmError::StackUnderflow { needed: 1, available: 0 })?;
+                    let top_len = top.len();
+                    self.push_num(top_len as i64)?;
+                }
+
                 // Equality
                 Opcode::OpEqual => {
                     let b = self.pop()?;

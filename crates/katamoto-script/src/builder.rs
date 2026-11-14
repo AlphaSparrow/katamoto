@@ -131,6 +131,7 @@ impl ScriptBuilder {
 
     // Convenience chaining methods for common operations
     pub fn op_cat(&mut self) -> &mut Self { self.push_opcode(Opcode::OpCat) }
+    pub fn op_size(&mut self) -> &mut Self { self.push_opcode(Opcode::OpSize) }
     pub fn op_sha256(&mut self) -> &mut Self { self.push_opcode(Opcode::OpSha256) }
     pub fn op_hash256(&mut self) -> &mut Self { self.push_opcode(Opcode::OpHash256) }
     pub fn op_dup(&mut self) -> &mut Self { self.push_opcode(Opcode::OpDup) }

@@ -55,6 +55,9 @@ pub enum Opcode {
     // Splice / BIP-347
     OpCat = 0x7e,
 
+    // Size / Array
+    OpSize = 0x82,
+
     // Equality
     OpEqual = 0x87,
     OpEqualVerify = 0x88,
@@ -152,6 +155,7 @@ impl Opcode {
             0x7c => Some(Opcode::OpSwap),
             0x7d => Some(Opcode::OpTuck),
             0x7e => Some(Opcode::OpCat),
+            0x82 => Some(Opcode::OpSize),
             0x87 => Some(Opcode::OpEqual),
             0x88 => Some(Opcode::OpEqualVerify),
             0x8b => Some(Opcode::Op1Add),

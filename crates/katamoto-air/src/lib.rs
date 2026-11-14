@@ -11,7 +11,7 @@ pub use constraints::{
 };
 pub use dsl::{
     constant, curr, next, AirDslError, AirSystem, BitwiseOpsGadget, Blake3RoundGadget, Cell,
-    Expr, RangeCheck16Gadget, RangeCheck8Gadget, Sha256RoundGadget,
+    Expr, RangeCheck16Gadget, RangeCheck8Gadget, Sha256RoundGadget, VectorizedRangeCheck16Gadget,
 };
 pub use quotient::{OodQuotientScript, OodQuotientStep};
 pub use taptree_compiler::{
@@ -511,6 +511,47 @@ mod tests {
         let wit16 = RangeCheck16Gadget::create_witness(val16);
         let mut vm16 = Vm::with_witness(wit16);
         assert!(vm16.execute(b16.as_bytes()).unwrap());
+    }
+
+    #[test]
+    fn test_vectorized_range_check_16_gadget_valid_and_rejections() {
+        // 1. Valid batch of 4 16-bit integers
+        let values = vec![0x0000u16, 0x00ff, 0x1234, 0xffff];
+        let mut builder = ScriptBuilder::new();
+        VectorizedRangeCheck16Gadget::emit_verifier(&mut builder, values.len());
+
+        let witness = VectorizedRangeCheck16Gadget::create_witness(&values);
+        let mut vm = Vm::with_witness(witness);
+        let ok = vm.execute(builder.as_bytes()).expect("Vectorized range check must succeed");
+        assert!(ok);
+        assert_eq!(vm.stack().last().unwrap(), &[1]);
+
+        // 2. Single element verification
+        let single_val = vec![4242u16];
+        let mut single_builder = ScriptBuilder::new();
+        VectorizedRangeCheck16Gadget::emit_verifier(&mut single_builder, 1);
+        let single_wit = VectorizedRangeCheck16Gadget::create_witness(&single_val);
+        let mut single_vm = Vm::with_witness(single_wit);
+        assert!(single_vm.execute(single_builder.as_bytes()).unwrap());
+
+        // 3. Adversary tampered packed commitment
+        let mut tampered_witness = VectorizedRangeCheck16Gadget::create_witness(&values);
+        tampered_witness[0][0] ^= 0x01; // flip 1 bit in expected packed
+        let mut bad_vm = Vm::with_witness(tampered_witness);
+        assert!(bad_vm.execute(builder.as_bytes()).is_err());
+
+        // 4. Adversary out-of-range low limb (lo = 300)
+        let mut oob_witness = VectorizedRangeCheck16Gadget::create_witness(&values);
+        let n = oob_witness.len();
+        oob_witness[n - 2] = katamoto_script::builder::encode_num(300);
+        let mut oob_vm = Vm::with_witness(oob_witness);
+        assert!(oob_vm.execute(builder.as_bytes()).is_err());
+
+        // 5. Adversary invalid chunk length (3 bytes instead of 2)
+        let mut bad_len_witness = VectorizedRangeCheck16Gadget::create_witness(&values);
+        bad_len_witness[1].push(0x00); // 3 bytes
+        let mut bad_len_vm = Vm::with_witness(bad_len_witness);
+        assert!(bad_len_vm.execute(builder.as_bytes()).is_err());
     }
 
     #[test]
