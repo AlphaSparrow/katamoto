@@ -93,6 +93,7 @@ impl Add for CirclePoint {
     }
 }
 
+#[allow(clippy::suspicious_arithmetic_impl)]
 impl Sub for CirclePoint {
     type Output = Self;
     fn sub(self, rhs: Self) -> Self::Output {
@@ -158,7 +159,7 @@ pub fn circle_half_point(p: CirclePoint) -> CirclePoint {
 
 /// Generates a Circle Subgroup generator of order 2^log_size
 pub fn circle_subgroup_generator(log_size: usize) -> CirclePoint {
-    assert!(log_size >= 1 && log_size <= 31, "Subgroup order must be 2^1..2^31");
+    assert!((1..=31).contains(&log_size), "Subgroup order must be 2^1..2^31");
     if log_size == 1 {
         return CirclePoint::ORDER_2;
     }

@@ -265,7 +265,7 @@ impl Transaction {
 
     /// Computes virtual transaction size (vsize / vB)
     pub fn vsize(&self) -> usize {
-        (self.weight() + 3) / 4
+        self.weight().div_ceil(4)
     }
 
     /// Validates Bitcoin consensus rules for Tapscript execution:
@@ -346,7 +346,7 @@ pub fn write_varint(buf: &mut Vec<u8>, val: u64) {
 /// Double SHA256 helper
 fn double_sha256(data: &[u8]) -> [u8; 32] {
     let first = Sha256::digest(data);
-    let second = Sha256::digest(&first);
+    let second = Sha256::digest(first);
     let mut out = [0u8; 32];
     out.copy_from_slice(&second);
     out
@@ -356,8 +356,8 @@ fn double_sha256(data: &[u8]) -> [u8; 32] {
 pub fn tagged_hash(tag: &str, data: &[u8]) -> [u8; 32] {
     let tag_hash = Sha256::digest(tag.as_bytes());
     let mut hasher = Sha256::new();
-    hasher.update(&tag_hash);
-    hasher.update(&tag_hash);
+    hasher.update(tag_hash);
+    hasher.update(tag_hash);
     hasher.update(data);
     let mut out = [0u8; 32];
     out.copy_from_slice(&hasher.finalize());
@@ -536,6 +536,7 @@ pub struct TaprootSighashPreimage {
 }
 
 impl TaprootSighashPreimage {
+    #[allow(clippy::too_many_arguments)]
     pub fn new_with_type(
         hash_type: TaprootSighashType,
         version: u32,

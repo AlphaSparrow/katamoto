@@ -29,7 +29,7 @@ impl WinternitzOTS {
     fn hash_chain(seed: &[u8; 32], times: usize) -> [u8; 32] {
         let mut curr = *seed;
         for _ in 0..times {
-            let hash = Sha256::digest(&curr);
+            let hash = Sha256::digest(curr);
             curr.copy_from_slice(&hash);
         }
         curr
@@ -43,7 +43,7 @@ impl WinternitzOTS {
         for i in 0..WOTS_TOTAL_NIBBLES {
             let mut hasher = Sha256::new();
             hasher.update(master_seed);
-            hasher.update(&(i as u32).to_le_bytes());
+            hasher.update((i as u32).to_le_bytes());
             let seed: [u8; 32] = hasher.finalize().into();
 
             let pk = Self::hash_chain(&seed, WOTS_W - 1); // 15 hashes
@@ -172,18 +172,18 @@ impl LamportOTS {
         for i in 0..bit_count {
             let mut hasher0 = Sha256::new();
             hasher0.update(master_seed);
-            hasher0.update(&(i as u32).to_le_bytes());
+            hasher0.update((i as u32).to_le_bytes());
             hasher0.update(b"0");
             let sk0: [u8; 32] = hasher0.finalize().into();
 
             let mut hasher1 = Sha256::new();
             hasher1.update(master_seed);
-            hasher1.update(&(i as u32).to_le_bytes());
+            hasher1.update((i as u32).to_le_bytes());
             hasher1.update(b"1");
             let sk1: [u8; 32] = hasher1.finalize().into();
 
-            let pk0: [u8; 32] = Sha256::digest(&sk0).into();
-            let pk1: [u8; 32] = Sha256::digest(&sk1).into();
+            let pk0: [u8; 32] = Sha256::digest(sk0).into();
+            let pk1: [u8; 32] = Sha256::digest(sk1).into();
 
             priv_pairs.push((sk0, sk1));
             pub_pairs.push((pk0, pk1));
@@ -250,7 +250,7 @@ impl WotsM31Commitment {
             let mut hasher = Sha256::new();
             hasher.update(master_seed);
             hasher.update(commitment_tag);
-            hasher.update(&(i as u32).to_le_bytes());
+            hasher.update((i as u32).to_le_bytes());
             let seed: [u8; 32] = hasher.finalize().into();
 
             let pk = WinternitzOTS::hash_chain(&seed, WOTS_W - 1);
@@ -367,7 +367,7 @@ impl WotsQm31Commitment {
             hasher.update(master_seed);
             hasher.update(commitment_tag);
             hasher.update(b"QM31");
-            hasher.update(&(i as u32).to_le_bytes());
+            hasher.update((i as u32).to_le_bytes());
             let seed: [u8; 32] = hasher.finalize().into();
 
             let pk = WinternitzOTS::hash_chain(&seed, WOTS_W - 1);

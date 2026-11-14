@@ -90,7 +90,7 @@ impl U256 {
 
     pub fn to_compact(&self) -> u32 {
         let n_bits = self.bits();
-        let mut n_size = (n_bits + 7) / 8;
+        let mut n_size = n_bits.div_ceil(8);
         let mut n_compact: u64 = if n_size <= 3 {
             self.0[0] << (8 * (3 - n_size))
         } else {
@@ -190,8 +190,8 @@ impl BitcoinHeader {
     /// Computes Double-SHA256 block hash: SHA256(SHA256(header_80B))
     pub fn block_hash(&self) -> [u8; 32] {
         let bytes = self.to_bytes();
-        let first_pass = Sha256::digest(&bytes);
-        let second_pass = Sha256::digest(&first_pass);
+        let first_pass = Sha256::digest(bytes);
+        let second_pass = Sha256::digest(first_pass);
         let mut hash = [0u8; 32];
         hash.copy_from_slice(&second_pass);
         hash
@@ -211,7 +211,7 @@ impl BitcoinHeader {
             target[..len].copy_from_slice(&val_bytes[..len]);
         } else if exponent <= 32 {
             let offset = exponent - 3;
-            let m_bytes = (mantissa as u32).to_le_bytes();
+            let m_bytes = mantissa.to_le_bytes();
             target[offset..offset + 3].copy_from_slice(&m_bytes[0..3]);
         }
         target
@@ -279,7 +279,7 @@ impl HeaderChain {
                     return false;
                 }
 
-                if height % DIFFICULTY_ADJUSTMENT_INTERVAL == 0 {
+                if height.is_multiple_of(DIFFICULTY_ADJUSTMENT_INTERVAL) {
                     // Epoch boundary! Check difficulty retargeting
                     let expected_nbits = DifficultyRetargeter::compute_next_target(
                         prev_header.nbits,
@@ -378,7 +378,7 @@ impl HeaderChain {
                 }
 
                 // 5. Retargeting
-                if height % DIFFICULTY_ADJUSTMENT_INTERVAL == 0 {
+                if height.is_multiple_of(DIFFICULTY_ADJUSTMENT_INTERVAL) {
                     let expected_nbits = DifficultyRetargeter::compute_next_target(
                         prev_header.nbits,
                         current_epoch_start_time,
@@ -405,7 +405,7 @@ impl HeaderChain {
 
         let mut hasher = Sha256::new();
         for h in &self.headers {
-            hasher.update(&h.to_bytes());
+            hasher.update(h.to_bytes());
         }
         let program_digest: [u8; 32] = hasher.finalize().into();
 
@@ -629,9 +629,9 @@ impl HeaderDisputeCompiler {
         let clamped = DifficultyRetargeter::clamp_timespan(actual_timespan);
 
         let mut hasher = Sha256::new();
-        hasher.update(&first_header.to_bytes());
-        hasher.update(&last_header.to_bytes());
-        hasher.update(&next_header.to_bytes());
+        hasher.update(first_header.to_bytes());
+        hasher.update(last_header.to_bytes());
+        hasher.update(next_header.to_bytes());
         let stmt_hash: [u8; 32] = hasher.finalize().into();
 
         let graph = BitVm2DisputeGraph::new(
@@ -684,8 +684,8 @@ impl HeaderDisputeCompiler {
         dispute_timelock_blocks: u32,
     ) -> (BitVm2DisputeGraph, TapTree, Vec<TaprootStarkSpend>) {
         let mut hasher = Sha256::new();
-        hasher.update(&header.to_bytes());
-        hasher.update(&mtp_timestamp.to_le_bytes());
+        hasher.update(header.to_bytes());
+        hasher.update(mtp_timestamp.to_le_bytes());
         let stmt_hash: [u8; 32] = hasher.finalize().into();
 
         let graph = BitVm2DisputeGraph::new(

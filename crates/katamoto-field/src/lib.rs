@@ -40,7 +40,7 @@ mod tests {
     fn test_m31_script_add_gadget() {
         let a = 1500000000i64;
         let b = 1000000000i64;
-        let expected = ((a + b) % M31_P) as i64;
+        let expected = (a + b) % M31_P;
 
         let mut builder = ScriptBuilder::new();
         builder.push_int(a);
@@ -58,7 +58,7 @@ mod tests {
     fn test_m31_script_sub_gadget() {
         let a = 100i64;
         let b = 500i64;
-        let expected = (a - b + M31_P) as i64;
+        let expected = a - b + M31_P;
 
         let mut builder = ScriptBuilder::new();
         builder.push_int(a);

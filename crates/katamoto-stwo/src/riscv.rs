@@ -47,12 +47,12 @@ impl RiscvStatement {
     /// Computes the 32-byte cryptographic commitment to the public statement
     pub fn statement_hash(&self) -> [u8; 32] {
         let mut hasher = Sha256::new();
-        hasher.update(&self.initial_pc.to_le_bytes());
-        hasher.update(&self.final_pc.to_le_bytes());
-        hasher.update(&self.cycle_count.to_le_bytes());
-        hasher.update(&self.initial_state_root);
-        hasher.update(&self.final_state_root);
-        hasher.update(&self.program_digest);
+        hasher.update(self.initial_pc.to_le_bytes());
+        hasher.update(self.final_pc.to_le_bytes());
+        hasher.update(self.cycle_count.to_le_bytes());
+        hasher.update(self.initial_state_root);
+        hasher.update(self.final_state_root);
+        hasher.update(self.program_digest);
         let res = hasher.finalize();
         let mut out = [0u8; 32];
         out.copy_from_slice(&res);
@@ -106,7 +106,7 @@ impl RiscvStep {
             }
             RiscvOpcode::Lw | RiscvOpcode::Sw => {
                 let addr = (self.rs1_val as i64 + self.imm as i64) as u32;
-                (addr % 4 == 0) && self.pc_next == self.pc_curr + 4
+                addr.is_multiple_of(4) && self.pc_next == self.pc_curr + 4
             }
             RiscvOpcode::Jal => {
                 let target = (self.pc_curr as i64 + self.imm as i64) as u32;

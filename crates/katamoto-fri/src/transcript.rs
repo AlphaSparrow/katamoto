@@ -29,7 +29,7 @@ impl Transcript {
     /// state <- SHA256(state || payload)
     pub fn absorb(&mut self, payload: &[u8]) {
         let mut hasher = Sha256::new();
-        hasher.update(&self.state);
+        hasher.update(self.state);
         hasher.update(payload);
         let res = hasher.finalize();
         self.state.copy_from_slice(&res);
@@ -70,7 +70,7 @@ impl Transcript {
         }
         let mut hasher = Sha256::new();
         hasher.update(state);
-        hasher.update(&nonce.to_le_bytes());
+        hasher.update(nonce.to_le_bytes());
         let hash = hasher.finalize();
 
         let full_zero_bytes = (pow_bits / 8) as usize;
@@ -191,7 +191,7 @@ impl TranscriptScript {
     pub fn create_pow_witness(state: &[u8; 32], nonce: u64, pow_bits: u32) -> Vec<Vec<u8>> {
         let mut hasher = Sha256::new();
         hasher.update(state);
-        hasher.update(&nonce.to_le_bytes());
+        hasher.update(nonce.to_le_bytes());
         let hash = hasher.finalize();
 
         let full_zero_bytes = (pow_bits / 8) as usize;

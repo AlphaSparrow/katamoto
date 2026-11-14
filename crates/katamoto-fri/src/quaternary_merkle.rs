@@ -49,7 +49,7 @@ impl QuaternaryMerkleTree {
     pub fn new(leaves: Vec<[u8; 32]>) -> Self {
         assert!(leaves.len() >= 4, "Quaternary tree requires at least 4 leaves");
         assert!(
-            leaves.len().is_power_of_two() && (leaves.len().trailing_zeros() % 2 == 0),
+            leaves.len().is_power_of_two() && leaves.len().trailing_zeros().is_multiple_of(2),
             "Leaf count must be a power of 4 (4, 16, 64, 256, ...)"
         );
 
@@ -59,7 +59,7 @@ impl QuaternaryMerkleTree {
         let mut current = leaves.clone();
         while current.len() > 1 {
             let mut next = Vec::with_capacity(current.len() / 4);
-            for chunk in current.chunks_exact(4) {
+            for chunk in current.as_chunks::<4>().0 {
                 next.push(hash_4_nodes(&chunk[0], &chunk[1], &chunk[2], &chunk[3]));
             }
             layers.push(next.clone());

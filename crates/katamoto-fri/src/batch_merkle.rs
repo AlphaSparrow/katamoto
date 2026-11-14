@@ -36,7 +36,7 @@ impl BatchMerkleTree {
             for col in columns {
                 let elem = col[row_idx];
                 row.push(elem);
-                hasher.update(&elem.value().to_le_bytes());
+                hasher.update(elem.value().to_le_bytes());
             }
 
             let hash = hasher.finalize();
@@ -161,7 +161,7 @@ impl MixedBatchMerkleTree {
                 let shift = max_log_size - col.log_size;
                 let col_idx = row_idx >> shift;
                 let elem = col.values[col_idx];
-                hasher.update(&elem.value().to_le_bytes());
+                hasher.update(elem.value().to_le_bytes());
             }
             let hash = hasher.finalize();
             let mut leaf = [0u8; 32];

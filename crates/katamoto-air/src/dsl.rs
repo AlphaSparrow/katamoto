@@ -487,7 +487,7 @@ pub struct Sha256RoundGadget;
 
 impl Sha256RoundGadget {
     pub fn rotr(x: u32, n: u32) -> u32 {
-        (x >> n) | (x << (32 - n))
+        x.rotate_right(n)
     }
 
     pub fn ch(x: u32, y: u32, z: u32) -> u32 {
@@ -549,7 +549,7 @@ pub struct Blake3RoundGadget;
 
 impl Blake3RoundGadget {
     pub fn rotr(x: u32, n: u32) -> u32 {
-        (x >> n) | (x << (32 - n))
+        x.rotate_right(n)
     }
 
     /// Blake3 G function operating on 4 state words and 2 message words

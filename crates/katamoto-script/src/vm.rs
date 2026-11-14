@@ -10,11 +10,17 @@ pub const MAX_SCRIPT_NUM_LENGTH: usize = 4; // Strict BIP-342 4-byte consensus S
 /// Memory-optimized stack item for the Bitcoin Tapscript VM.
 /// Up to 32 bytes are stored inline without heap allocations (covering all hashes,
 /// public keys, and ScriptNum integers). Larger payloads spill over to boxed slices.
-#[derive(Clone, Eq, Hash)]
+#[derive(Clone, Eq)]
 pub struct StackItem {
     len: u8,
     data: [u8; 32],
     heap: Option<Box<[u8]>>,
+}
+
+impl std::hash::Hash for StackItem {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.as_slice().hash(state);
+    }
 }
 
 impl Default for StackItem {
@@ -311,6 +317,12 @@ pub struct Vm {
     opcode_traces: Vec<OpcodeExecutionTrace>,
 }
 
+impl Default for Vm {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Vm {
     pub fn new() -> Self {
         Self {
@@ -352,7 +364,7 @@ impl Vm {
         let max_elem = witness.iter().map(|w| w.len()).max().unwrap_or(0);
         let witness_bytes: usize = witness.iter().map(|w| w.len() + 1).sum();
         let witness_wu = witness_bytes;
-        let witness_vbytes = (witness_wu + 3) / 4;
+        let witness_vbytes = witness_wu.div_ceil(4);
         let stack: Vec<StackItem> = witness.into_iter().map(StackItem::from_vec).collect();
         Self {
             stack,
@@ -493,7 +505,7 @@ impl Vm {
             return false;
         }
         if let Some(sighash) = self.tx_sighash {
-            let mock_expected = Sha256::digest([&pubkey[..], &sighash[..]].concat());
+            let mock_expected = Sha256::digest([pubkey, &sighash[..]].concat());
             if sig.starts_with(&mock_expected[..32]) || sig.len() == 64 || sig.len() == 65 {
                 return true;
             }
@@ -1194,9 +1206,9 @@ mod tests {
         let _ = vm.execute(builder.as_bytes()).expect("Execution should succeed");
 
         assert_eq!(vm.stack().len(), 4);
-        for i in 0..4 {
+        for (i, &exp) in expected.iter().enumerate() {
             let res = decode_num(&vm.stack()[i], MAX_SCRIPT_NUM_LENGTH).unwrap();
-            assert_eq!(res, expected[i] as i64, "QM31 component {} mismatch", i);
+            assert_eq!(res, exp as i64, "QM31 component {} mismatch", i);
         }
         assert!(vm.stats().max_stack_depth <= 10);
     }

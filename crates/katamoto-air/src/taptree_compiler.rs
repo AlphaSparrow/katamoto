@@ -327,7 +327,7 @@ impl CircleStarkTapTreeCompiler {
         // 5. Leaf Type B: Circle FRI Folding Step Evaluations (2-to-1 or 4-to-1 skip-folding)
         let gen_8 = circle_subgroup_generator(3);
         if use_4to1_skip_folding {
-            let num_pairs = (num_circle_fri_queries + 1) / 2;
+            let num_pairs = num_circle_fri_queries.div_ceil(2);
             for pair_idx in 0..num_pairs {
                 let q0 = pair_idx * 2;
                 let q1 = q0 + 1;

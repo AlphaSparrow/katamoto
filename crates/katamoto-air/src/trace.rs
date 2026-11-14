@@ -57,7 +57,7 @@ impl ExecutionTrace {
         for row_idx in 0..self.length {
             let mut hasher = Sha256::new();
             for col in &self.columns {
-                hasher.update(&col[row_idx].value().to_le_bytes());
+                hasher.update(col[row_idx].value().to_le_bytes());
             }
             let hash = hasher.finalize();
             let mut leaf = [0u8; 32];

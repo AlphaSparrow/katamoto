@@ -126,8 +126,8 @@ mod tests {
         assert!(ok1);
         // After absorbing trace_root, stack has new state
         let mut expected_after_absorb = Sha256::new();
-        expected_after_absorb.update(&initial_state);
-        expected_after_absorb.update(&trace_root);
+        expected_after_absorb.update(initial_state);
+        expected_after_absorb.update(trace_root);
         assert_eq!(vm1.stack()[0], expected_after_absorb.finalize().to_vec());
 
         // 2. Challenge extraction verification:

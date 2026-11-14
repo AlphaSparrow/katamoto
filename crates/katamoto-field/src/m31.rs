@@ -97,8 +97,8 @@ impl M31 {
     pub fn to_bits(self) -> [u8; 31] {
         let mut bits = [0u8; 31];
         let mut val = self.0;
-        for i in 0..31 {
-            bits[i] = (val & 1) as u8;
+        for bit in &mut bits {
+            *bit = (val & 1) as u8;
             val >>= 1;
         }
         bits

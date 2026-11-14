@@ -144,7 +144,7 @@ impl L1SettlementCostModel {
         };
 
         // Witness calculations
-        let effective_merkle_layers = (log_domain_size + layers_per_fold - 1) / layers_per_fold;
+        let effective_merkle_layers = log_domain_size.div_ceil(layers_per_fold);
         let paths_per_query = if arity == 2 { 2u64 } else { 1u64 };
         let merkle_bytes_per_query =
             paths_per_query * (effective_merkle_layers as u64) * (log_domain_size as u64) * 32;
@@ -161,7 +161,7 @@ impl L1SettlementCostModel {
         let control_block_bytes = 65u64; // 33-byte header + 32-byte merkle sibling
         let witness_weight = witness_bytes + (script_bytes as u64) + control_block_bytes;
         let total_weight_units = (base_tx_bytes * 4) + witness_weight;
-        let total_vbytes = (total_weight_units + 3) / 4;
+        let total_vbytes = total_weight_units.div_ceil(4);
 
         let prover_work_hashes = 1u64 << pow_bits;
         let estimated_prover_time_ms =
@@ -246,7 +246,7 @@ impl FriTradeoffMatrix {
         }
 
         // Sort frontier by increasing prover work (which naturally corresponds to decreasing settlement fee)
-        frontier.sort_by(|a, b| a.prover_work_hashes.cmp(&b.prover_work_hashes));
+        frontier.sort_by_key(|a| a.prover_work_hashes);
         frontier
     }
 

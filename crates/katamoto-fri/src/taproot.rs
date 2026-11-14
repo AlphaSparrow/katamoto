@@ -7,8 +7,8 @@ pub const TAPSCRIPT_LEAF_VERSION: u8 = 0xc0;
 pub fn tagged_hash(tag: &str, data: &[u8]) -> [u8; 32] {
     let tag_hash = Sha256::digest(tag.as_bytes());
     let mut hasher = Sha256::new();
-    hasher.update(&tag_hash);
-    hasher.update(&tag_hash);
+    hasher.update(tag_hash);
+    hasher.update(tag_hash);
     hasher.update(data);
     let result = hasher.finalize();
     let mut out = [0u8; 32];
@@ -90,7 +90,7 @@ impl TapTree {
 
         let mut current = self.leaf_hashes.clone();
         while current.len() > 1 {
-            let mut next = Vec::with_capacity((current.len() + 1) / 2);
+            let mut next = Vec::with_capacity(current.len().div_ceil(2));
             for chunk in current.chunks(2) {
                 if chunk.len() == 2 {
                     next.push(Self::branch_hash(&chunk[0], &chunk[1]));
@@ -124,7 +124,7 @@ impl TapTree {
                     ctrl.extend_from_slice(&current[sibling_idx]);
                 }
 
-                let mut next = Vec::with_capacity((current.len() + 1) / 2);
+                let mut next = Vec::with_capacity(current.len().div_ceil(2));
                 for chunk in current.chunks(2) {
                     if chunk.len() == 2 {
                         next.push(Self::branch_hash(&chunk[0], &chunk[1]));

@@ -631,9 +631,9 @@ impl RecursiveDisputeCompiler {
         claimed_post_state: [u8; 32],
     ) -> (BitVm2DisputeGraph, TapTree, Vec<TaprootStarkSpend>) {
         let mut hasher = Sha256::new();
-        hasher.update(&pre_state);
+        hasher.update(pre_state);
         hasher.update(step_data);
-        hasher.update(&claimed_post_state);
+        hasher.update(claimed_post_state);
         let stmt_hash: [u8; 32] = hasher.finalize().into();
 
         let graph = BitVm2DisputeGraph::new(
@@ -692,10 +692,10 @@ impl RecursiveDisputeCompiler {
         claimed_statement_hash: [u8; 32],
     ) -> (BitVm2DisputeGraph, TapTree, Vec<TaprootStarkSpend>) {
         let mut hasher = Sha256::new();
-        hasher.update(&initial_state);
-        hasher.update(&final_state);
-        hasher.update(&program_digest);
-        hasher.update(&claimed_statement_hash);
+        hasher.update(initial_state);
+        hasher.update(final_state);
+        hasher.update(program_digest);
+        hasher.update(claimed_statement_hash);
         let stmt_hash: [u8; 32] = hasher.finalize().into();
 
         let graph = BitVm2DisputeGraph::new(
@@ -974,8 +974,8 @@ mod tests {
         let step_data = [0x99u8; 16];
         // Operator honestly committed the real hash: SHA256(pre_state || step_data)
         let mut hasher = Sha256::new();
-        hasher.update(&pre_state);
-        hasher.update(&step_data);
+        hasher.update(pre_state);
+        hasher.update(step_data);
         let real_post_state: [u8; 32] = hasher.finalize().into();
 
         let (_graph, _tree, spends) = RecursiveDisputeCompiler::compile_state_transition_dispute(

@@ -123,7 +123,7 @@ impl FriSecurityConfig {
             16 => 4,
             _ => 1,
         };
-        let effective_layers = (num_fri_layers + layers_per_fold - 1) / layers_per_fold;
+        let effective_layers = num_fri_layers.div_ceil(layers_per_fold);
         (self.query_count as u64) * (effective_layers as u64) * (self.merkle_paths_per_query as u64)
     }
 
@@ -480,7 +480,7 @@ impl QueryDomainSampler {
             let mut hasher = Sha256::new();
             hasher.update(transcript_state);
             hasher.update(b"query_idx");
-            hasher.update(&counter.to_le_bytes());
+            hasher.update(counter.to_le_bytes());
             let hash = hasher.finalize();
 
             let raw = u32::from_le_bytes([hash[0], hash[1], hash[2], hash[3]]);
