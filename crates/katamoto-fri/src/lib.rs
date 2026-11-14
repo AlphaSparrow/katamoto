@@ -2,6 +2,7 @@ pub mod batch_merkle;
 pub mod circle_folding;
 pub mod folding;
 pub mod merkle;
+pub mod quaternary_merkle;
 pub mod security;
 pub mod taproot;
 pub mod tradeoffs;
@@ -16,6 +17,10 @@ pub use circle_folding::{
 };
 pub use folding::{FriQueryStep, FriRoundQuery, FriScript};
 pub use merkle::{hash_node, MerkleProof, MerkleScript, MerkleTree};
+pub use quaternary_merkle::{
+    hash_4_nodes, QuaternaryMerkleProof, QuaternaryMerkleScript, QuaternaryMerkleStep,
+    QuaternaryMerkleTree,
+};
 pub use security::{
     AdaptiveSecuritySelector, FriSecurityConfig, ListDecodingCalculator, ProofSizeBudgetOptimizer,
     ProximityRegime, QueryDomainSampler, SettlementEstimate,
@@ -785,5 +790,50 @@ mod tests {
         let ok = vm.execute(builder.as_bytes()).expect("Valid preimage-bound round must pass");
         assert!(ok);
         assert_eq!(vm.stack().last().unwrap(), &[1]);
+    }
+
+    #[test]
+    fn test_quaternary_merkle_tree_proof_and_script_verification() {
+        // Build 16 leaves (quaternary depth = 2: 16 -> 4 -> 1)
+        let mut leaves = Vec::new();
+        for i in 0..16 {
+            let h = Sha256::digest(format!("quaternary_circle_eval_{}", i).as_bytes());
+            let mut arr = [0u8; 32];
+            arr.copy_from_slice(&h);
+            leaves.push(arr);
+        }
+
+        let tree = QuaternaryMerkleTree::new(leaves);
+        let root = tree.root();
+        assert_eq!(tree.depth(), 2, "16-leaf quaternary tree has depth 2");
+
+        // 1. Prove leaf index 11 (in group 2, selector 3, layer 1 group 0 selector 2)
+        let proof11 = tree.prove(11);
+        assert_eq!(proof11.steps.len(), 2);
+        assert_eq!(proof11.steps[0].selector, 3); // 11 % 4 = 3
+        assert_eq!(proof11.steps[1].selector, 2); // (11 / 4) % 4 = 2
+
+        let mut builder = ScriptBuilder::new();
+        QuaternaryMerkleScript::emit_verifier(&mut builder, tree.depth(), &root);
+
+        let witness11 = QuaternaryMerkleScript::create_witness(&proof11);
+        let mut vm = Vm::with_witness(witness11);
+        let ok = vm.execute(builder.as_bytes()).expect("Quaternary Merkle proof must verify");
+        assert!(ok);
+        assert_eq!(vm.stack().last().unwrap(), &[1]);
+
+        // 2. Reject tampered sibling hash
+        let mut bad_proof = proof11.clone();
+        bad_proof.steps[0].children[0][0] ^= 0x01;
+        let bad_wit = QuaternaryMerkleScript::create_witness(&bad_proof);
+        let mut bad_vm = Vm::with_witness(bad_wit);
+        assert!(bad_vm.execute(builder.as_bytes()).is_err());
+
+        // 3. Reject tampered selector (wrong path)
+        let mut bad_sel_proof = proof11.clone();
+        bad_sel_proof.steps[0].selector = 1; // Claiming child 1 instead of 3
+        let bad_sel_wit = QuaternaryMerkleScript::create_witness(&bad_sel_proof);
+        let mut bad_sel_vm = Vm::with_witness(bad_sel_wit);
+        assert!(bad_sel_vm.execute(builder.as_bytes()).is_err());
     }
 }
