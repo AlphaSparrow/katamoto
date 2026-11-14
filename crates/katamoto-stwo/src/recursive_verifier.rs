@@ -744,6 +744,193 @@ impl RecursiveDisputeCompiler {
     }
 }
 
+/// Two-Level Dispute Bisection State Machine for Aggregated Stwo Proofs.
+/// Delivers an exponential reduction in interactive dispute overhead:
+/// Level 1: Isolates the disputed statement index k out of N aggregated statements
+///          via Merkle inclusion path against the aggregated statement root.
+/// Level 2: Executes the fine-grained cryptographic fraud proof (state transition,
+///          statement tamper, or FRI colinearity violation) to slash the operator.
+#[derive(Debug, Clone)]
+pub struct TwoLevelBisectionDispute {
+    pub operator_pubkey: [u8; 32],
+    pub challenger_pubkey: [u8; 32],
+    pub bond_satoshis: u64,
+    pub dispute_timelock_blocks: u32,
+    pub aggregated_statement_root: [u8; 32],
+    pub num_statements: usize,
+}
+
+impl TwoLevelBisectionDispute {
+    pub const LEAF_OPERATOR_SETTLE: &'static str = "two_level_operator_timelock_leaf";
+    pub const LEAF_LEVEL1_BISECT: &'static str = "two_level_l1_statement_isolate_leaf";
+    pub const LEAF_LEVEL2_STATE_FRAUD: &'static str = "two_level_l2_state_fraud_leaf";
+    pub const LEAF_LEVEL2_TAMPER_FRAUD: &'static str = "two_level_l2_tamper_fraud_leaf";
+    pub const LEAF_LEVEL2_COLINEARITY_FRAUD: &'static str = "two_level_l2_colinearity_fraud_leaf";
+
+    pub fn new(
+        operator_pubkey: [u8; 32],
+        challenger_pubkey: [u8; 32],
+        bond_satoshis: u64,
+        dispute_timelock_blocks: u32,
+        aggregated_statement_root: [u8; 32],
+        num_statements: usize,
+    ) -> Self {
+        Self {
+            operator_pubkey,
+            challenger_pubkey,
+            bond_satoshis,
+            dispute_timelock_blocks,
+            aggregated_statement_root,
+            num_statements,
+        }
+    }
+
+    /// Emits script for Level 1 Statement Isolation:
+    /// Asserts that a claimed statement hash is included in `aggregated_statement_root`
+    /// via a Merkle inclusion proof, followed by challenger signature verification.
+    /// Stack: `[challenger_sig, siblings..., statement_leaf_hash]`
+    pub fn emit_level1_bisection_leaf(
+        builder: &mut ScriptBuilder,
+        depth: usize,
+        aggregated_root: &[u8; 32],
+        challenger_pubkey: &[u8; 32],
+    ) {
+        MerkleScript::emit_verifier(builder, depth, aggregated_root);
+        builder.op_drop(); // drop the TRUE left by emit_verifier
+        builder.push_slice(challenger_pubkey);
+        builder.op_checksig();
+    }
+
+    /// Emits script for Level 2 Algebraic FRI Colinearity Fraud:
+    /// Asserts that in-script evaluation of (t1 + t2) != lhs in M31 arithmetic,
+    /// proving the operator committed an invalid Circle FRI folding step.
+    /// Stack input: `[challenger_sig, lhs, t1, t2]` (t2 on top)
+    pub fn emit_colinearity_fraud_leaf(
+        builder: &mut ScriptBuilder,
+        challenger_pubkey: &[u8; 32],
+    ) {
+        // Stack: [challenger_sig, lhs, t1, t2]
+        katamoto_field::M31Script::emit_add(builder); // [challenger_sig, lhs, (t1 + t2)%P]
+        builder.op_equal(); // [challenger_sig, is_equal]
+        builder.op_not();   // [challenger_sig, is_invalid]
+        builder.op_verify();
+        builder.push_slice(challenger_pubkey);
+        builder.op_checksig();
+    }
+
+    /// Creates witness vector for colinearity fraud dispute
+    pub fn create_colinearity_fraud_witness(
+        lhs: M31,
+        t1: M31,
+        t2: M31,
+        challenger_sig: [u8; 64],
+    ) -> Vec<Vec<u8>> {
+        use katamoto_script::builder::encode_num;
+        vec![
+            challenger_sig.to_vec(),
+            encode_num(lhs.as_i64()),
+            encode_num(t1.as_i64()),
+            encode_num(t2.as_i64()),
+        ]
+    }
+
+    /// Compiles the complete Two-Level Dispute Bisection TapTree
+    pub fn compile(
+        &self,
+        stmt_merkle_proof: &MerkleProof,
+        fraudulent_pre_state: [u8; 32],
+        step_data: &[u8],
+        fraudulent_claimed_post: [u8; 32],
+        invalid_colinearity_triple: (M31, M31, M31),
+    ) -> (TapTree, Vec<TaprootStarkSpend>) {
+        let mut leaves = Vec::with_capacity(5);
+        let mut spend_factories = Vec::new();
+
+        // 1. Leaf 0: Operator settlement after CSV timelock
+        let mut b_settle = ScriptBuilder::new();
+        RecursiveDisputeCompiler::emit_operator_settlement_leaf(
+            &mut b_settle,
+            &self.operator_pubkey,
+            self.dispute_timelock_blocks,
+        );
+        let script_settle = b_settle.to_bytes();
+        let wit_settle = RecursiveDisputeCompiler::create_operator_settlement_witness([0x11u8; 64]);
+        leaves.push(TapLeaf::new(Self::LEAF_OPERATOR_SETTLE, script_settle.clone()));
+        spend_factories.push((Self::LEAF_OPERATOR_SETTLE.to_string(), wit_settle, script_settle));
+
+        // 2. Leaf 1: Level 1 Bisection statement isolation
+        let mut b_l1 = ScriptBuilder::new();
+        Self::emit_level1_bisection_leaf(
+            &mut b_l1,
+            stmt_merkle_proof.siblings.len(),
+            &self.aggregated_statement_root,
+            &self.challenger_pubkey,
+        );
+        let script_l1 = b_l1.to_bytes();
+        let mut wit_l1 = MerkleScript::create_witness(stmt_merkle_proof);
+        wit_l1.insert(0, vec![0x22u8; 64]);
+        leaves.push(TapLeaf::new(Self::LEAF_LEVEL1_BISECT, script_l1.clone()));
+        spend_factories.push((Self::LEAF_LEVEL1_BISECT.to_string(), wit_l1, script_l1));
+
+        // 3. Leaf 2: Level 2 State transition fraud
+        let mut b_state = ScriptBuilder::new();
+        RecursiveDisputeCompiler::emit_state_transition_fraud_leaf(
+            &mut b_state,
+            &self.challenger_pubkey,
+        );
+        let script_state = b_state.to_bytes();
+        let wit_state = RecursiveDisputeCompiler::create_state_transition_fraud_witness(
+            fraudulent_pre_state,
+            step_data,
+            fraudulent_claimed_post,
+            [0x33u8; 64],
+        );
+        leaves.push(TapLeaf::new(Self::LEAF_LEVEL2_STATE_FRAUD, script_state.clone()));
+        spend_factories.push((Self::LEAF_LEVEL2_STATE_FRAUD.to_string(), wit_state, script_state));
+
+        // 4. Leaf 3: Level 2 Statement tamper fraud
+        let mut b_tamper = ScriptBuilder::new();
+        RecursiveDisputeCompiler::emit_statement_tamper_leaf(
+            &mut b_tamper,
+            &self.challenger_pubkey,
+        );
+        let script_tamper = b_tamper.to_bytes();
+        let wit_tamper = RecursiveDisputeCompiler::create_statement_tamper_witness(
+            [0xaa; 32],
+            [0xbb; 32],
+            [0xcc; 32],
+            [0xff; 32],
+            [0x44u8; 64],
+        );
+        leaves.push(TapLeaf::new(Self::LEAF_LEVEL2_TAMPER_FRAUD, script_tamper.clone()));
+        spend_factories.push((Self::LEAF_LEVEL2_TAMPER_FRAUD.to_string(), wit_tamper, script_tamper));
+
+        // 5. Leaf 4: Level 2 Algebraic FRI colinearity fraud
+        let mut b_colin = ScriptBuilder::new();
+        Self::emit_colinearity_fraud_leaf(&mut b_colin, &self.challenger_pubkey);
+        let script_colin = b_colin.to_bytes();
+        let wit_colin = Self::create_colinearity_fraud_witness(
+            invalid_colinearity_triple.0,
+            invalid_colinearity_triple.1,
+            invalid_colinearity_triple.2,
+            [0x55u8; 64],
+        );
+        leaves.push(TapLeaf::new(Self::LEAF_LEVEL2_COLINEARITY_FRAUD, script_colin.clone()));
+        spend_factories.push((Self::LEAF_LEVEL2_COLINEARITY_FRAUD.to_string(), wit_colin, script_colin));
+
+        let tap_tree = TapTree::new(leaves);
+        let internal_nums_key = [0x02u8; 32];
+        let mut spends = Vec::new();
+
+        for (idx, (name, wit, script)) in spend_factories.into_iter().enumerate() {
+            let ctrl = tap_tree.control_block(idx, &internal_nums_key);
+            spends.push(TaprootStarkSpend::new(&name, wit, script, ctrl));
+        }
+
+        (tap_tree, spends)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -864,5 +1051,84 @@ mod tests {
         let ok = vm_pass.execute(&settle_spend.leaf_script).expect("Operator settlement failed");
         assert!(ok);
         assert_eq!(vm_pass.stack().last().unwrap(), &[1]);
+    }
+
+    #[test]
+    fn test_two_level_dispute_bisection_isolation_and_slashing() {
+        let op_key = [0x11u8; 32];
+        let ch_key = [0x22u8; 32];
+
+        // 1. Build 4 aggregated statements
+        let mut stmts = Vec::new();
+        for i in 0..4 {
+            let stmt = RiscvStatement {
+                initial_pc: 0x80000000,
+                final_pc: 0x80000100 + (i as u32) * 4,
+                cycle_count: 100 + (i as u64),
+                initial_state_root: [0; 32],
+                final_state_root: [i as u8; 32],
+                program_digest: [0xaa; 32],
+            };
+            stmts.push(stmt);
+        }
+        let agg_proof = AggregatedRecursiveProof::aggregate(stmts);
+        let (_stmt, stmt_proof) = agg_proof.prove_statement_inclusion(2);
+
+        // Disputed state and invalid colinearity triple: lhs=999 != 100 + 200 = 300
+        let pre_state = [0xaa; 32];
+        let step_data = [0x55; 16];
+        let bogus_post_state = [0xee; 32];
+        let invalid_triple = (M31::new(999), M31::new(100), M31::new(200));
+
+        let dispute = TwoLevelBisectionDispute::new(
+            op_key,
+            ch_key,
+            100_000_000,
+            144,
+            agg_proof.aggregated_statement_root,
+            4,
+        );
+
+        let (_tree, spends) = dispute.compile(
+            &stmt_proof,
+            pre_state,
+            &step_data,
+            bogus_post_state,
+            invalid_triple,
+        );
+        assert_eq!(spends.len(), 5);
+
+        // Test Level 1 Bisection statement isolation spend in VM
+        let l1_spend = &spends[1];
+        let mut vm_l1 = Vm::with_witness(l1_spend.witness_items.clone());
+        let ok_l1 = vm_l1.execute(&l1_spend.leaf_script).expect("Level 1 bisection spend must succeed");
+        assert!(ok_l1);
+        assert_eq!(vm_l1.stack().last().unwrap(), &[1]);
+
+        // Test Level 2 State Transition Fraud slashing spend in VM
+        let l2_state_spend = &spends[2];
+        let mut vm_state = Vm::with_witness(l2_state_spend.witness_items.clone());
+        let ok_state = vm_state.execute(&l2_state_spend.leaf_script).expect("State fraud spend must succeed");
+        assert!(ok_state);
+        assert_eq!(vm_state.stack().last().unwrap(), &[1]);
+
+        // Test Level 2 Colinearity Fraud slashing spend in VM (lhs=999 != 300)
+        let l2_colin_spend = &spends[4];
+        let mut vm_colin = Vm::with_witness(l2_colin_spend.witness_items.clone());
+        let ok_colin = vm_colin.execute(&l2_colin_spend.leaf_script).expect("Colinearity fraud spend must succeed");
+        assert!(ok_colin);
+        assert_eq!(vm_colin.stack().last().unwrap(), &[1]);
+
+        // Test honest colinearity (lhs = t1 + t2 = 300): slashing MUST fail
+        let mut honest_builder = ScriptBuilder::new();
+        TwoLevelBisectionDispute::emit_colinearity_fraud_leaf(&mut honest_builder, &ch_key);
+        let honest_wit = TwoLevelBisectionDispute::create_colinearity_fraud_witness(
+            M31::new(300),
+            M31::new(100),
+            M31::new(200),
+            [0x55u8; 64],
+        );
+        let mut honest_vm = Vm::with_witness(honest_wit);
+        assert!(honest_vm.execute(honest_builder.as_bytes()).is_err(), "Honest colinearity must not be slashed");
     }
 }

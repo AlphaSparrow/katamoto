@@ -20,6 +20,7 @@ pub use proof::{StwoFriProof, StwoFriQuery, StwoOodEvaluations, StwoProof, StwoP
 pub use recursive_verifier::{
     AggregatedRecursiveProof, CanonicalRecursiveProof, CanonicalRecursiveTapTree,
     CompressedCanonicalTapTree, RecursiveDisputeCompiler, RecursiveVerifierConfig,
+    TwoLevelBisectionDispute,
 };
 pub use riscv::{RiscvOpcode, RiscvScript, RiscvStatement, RiscvStep};
 

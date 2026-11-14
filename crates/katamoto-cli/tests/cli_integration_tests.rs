@@ -365,3 +365,64 @@ fn test_cli_tradeoffs_matrix_and_pareto_frontier() {
     ).expect("Must find cheapest");
     assert!(cheapest.total_vbytes > 0);
 }
+
+#[test]
+fn test_cli_two_level_recursive_bisection_slashing() {
+    use katamoto_field::M31;
+    use katamoto_stwo::recursive_verifier::{AggregatedRecursiveProof, TwoLevelBisectionDispute};
+    use katamoto_stwo::riscv::RiscvStatement;
+
+    let op_key = [0x77u8; 32];
+    let ch_key = [0x88u8; 32];
+
+    // Build 8 aggregated statements (Merkle depth 3)
+    let mut stmts = Vec::new();
+    for i in 0..8 {
+        let stmt = RiscvStatement {
+            initial_pc: 0x80000000,
+            final_pc: 0x80000000 + ((i + 1) as u32) * 16,
+            cycle_count: 500,
+            initial_state_root: [i as u8; 32],
+            final_state_root: [(i + 1) as u8; 32],
+            program_digest: [0x55; 32],
+        };
+        stmts.push(stmt);
+    }
+    let agg_proof = AggregatedRecursiveProof::aggregate(stmts);
+    let (_stmt5, proof5) = agg_proof.prove_statement_inclusion(5);
+
+    let dispute = TwoLevelBisectionDispute::new(
+        op_key,
+        ch_key,
+        250_000_000,
+        288,
+        agg_proof.aggregated_statement_root,
+        8,
+    );
+
+    let (tree, spends) = dispute.compile(
+        &proof5,
+        [0x11; 32],
+        &[0x22; 16],
+        [0x33; 32],
+        (M31::new(777), M31::new(100), M31::new(200)),
+    );
+
+    assert_eq!(tree.leaves.len(), 5);
+    assert_eq!(spends.len(), 5);
+
+    // 1. Level 1 Bisection isolate statement 5
+    let l1_spend = &spends[1];
+    let mut vm_l1 = Vm::with_witness(l1_spend.witness_items.clone());
+    assert!(vm_l1.execute(&l1_spend.leaf_script).unwrap());
+
+    // 2. Level 2 State fraud spend
+    let l2_state = &spends[2];
+    let mut vm_state = Vm::with_witness(l2_state.witness_items.clone());
+    assert!(vm_state.execute(&l2_state.leaf_script).unwrap());
+
+    // 3. Level 2 Colinearity fraud spend
+    let l2_colin = &spends[4];
+    let mut vm_colin = Vm::with_witness(l2_colin.witness_items.clone());
+    assert!(vm_colin.execute(&l2_colin.leaf_script).unwrap());
+}
