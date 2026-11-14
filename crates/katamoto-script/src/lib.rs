@@ -22,8 +22,8 @@ pub use ots::{
 pub use tx::{
     compute_sha_amounts, compute_sha_outputs, compute_sha_prevouts, compute_sha_scriptpubkeys,
     compute_sha_sequences, tagged_hash, write_varint, ConsensusError, CovenantScript, OutPoint,
-    TaprootSighashPreimage, TestMempoolAccept, Transaction, TxIn, TxOut, Witness,
-    MAX_STANDARD_TX_WEIGHT, SEQUENCE_FINAL,
+    TaprootSighashBuilder, TaprootSighashPreimage, TaprootSighashType, TestMempoolAccept,
+    Transaction, TxIn, TxOut, Witness, MAX_STANDARD_TX_WEIGHT, SEQUENCE_FINAL,
 };
 pub use vm::{
     ExecutionStats, OpcodeExecutionTrace, ScriptProfile, StackItem, StackWatermarkConfig, Vm,
@@ -383,6 +383,75 @@ mod tests {
         let mut tampered_vm = Vm::with_witness(tampered_witness);
         tampered_vm.set_tx_sighash(sighash);
         assert_eq!(tampered_vm.execute(tampered_builder.as_bytes()).unwrap_err(), VmError::VerifyFailed);
+    }
+
+    #[test]
+    fn test_taproot_sighash_all_and_single_covenants() {
+        let covenant_pk = [0x55u8; 32];
+        let in0 = TxIn::new_taproot(OutPoint::new([0x11; 32], 0));
+        let in1 = TxIn::new_taproot(OutPoint::new([0x22; 32], 1));
+
+        let out0 = TxOut::p2tr(&[0xaa; 32], 25_000_000);
+        let out1 = TxOut::p2tr(&[0xbb; 32], 75_000_000);
+
+        let tx = Transaction::new(
+            2,
+            vec![in0, in1],
+            vec![out0.clone(), out1.clone()],
+            vec![Witness::default(), Witness::default()],
+        );
+
+        let prev0 = TxOut::p2tr(&covenant_pk, 50_000_000);
+        let prev1 = TxOut::p2tr(&covenant_pk, 50_000_000);
+        let prevouts = vec![prev0, prev1];
+
+        // 1. SIGHASH_ALL verification
+        let preimage_all = TaprootSighashBuilder::build(&tx, 0, &prevouts, TaprootSighashType::All)
+            .expect("SIGHASH_ALL build should succeed");
+        let sighash_all = preimage_all.compute_sighash();
+
+        let sha_all_outputs = compute_sha_outputs(&tx.outputs);
+        let mut b_all = ScriptBuilder::new();
+        CovenantScript::emit_taproot_sighash_all_covenant(&mut b_all, &sha_all_outputs, &covenant_pk);
+
+        let mut sig_all = [0u8; 64];
+        let tag_all = sha2::Sha256::digest([&covenant_pk[..], &sighash_all[..]].concat());
+        sig_all[..32].copy_from_slice(&tag_all);
+
+        let wit_all = CovenantScript::create_covenant_witness(&sig_all, &covenant_pk, &preimage_all);
+        let mut vm_all = Vm::with_witness(wit_all);
+        vm_all.set_tx_sighash(sighash_all);
+        assert!(vm_all.execute(b_all.as_bytes()).unwrap());
+
+        // 2. SIGHASH_SINGLE verification for input 1 binding to output 1
+        let preimage_single = TaprootSighashBuilder::build(&tx, 1, &prevouts, TaprootSighashType::Single)
+            .expect("SIGHASH_SINGLE build should succeed");
+        let sighash_single = preimage_single.compute_sighash();
+
+        let expected_single_hash = TaprootSighashBuilder::compute_single_output_hash(&out1);
+        let mut b_single = ScriptBuilder::new();
+        CovenantScript::emit_taproot_sighash_single_covenant(&mut b_single, &expected_single_hash, &covenant_pk);
+
+        let mut sig_single = [0u8; 64];
+        let tag_single = sha2::Sha256::digest([&covenant_pk[..], &sighash_single[..]].concat());
+        sig_single[..32].copy_from_slice(&tag_single);
+
+        let wit_single = CovenantScript::create_covenant_witness(&sig_single, &covenant_pk, &preimage_single);
+        let mut vm_single = Vm::with_witness(wit_single);
+        vm_single.set_tx_sighash(sighash_single);
+        assert!(vm_single.execute(b_single.as_bytes()).unwrap());
+
+        // 3. SIGHASH_SINGLE rejects mismatch when output 0 is passed instead of output 1
+        let wrong_hash = TaprootSighashBuilder::compute_single_output_hash(&out0);
+        let mut b_wrong = ScriptBuilder::new();
+        CovenantScript::emit_taproot_sighash_single_covenant(&mut b_wrong, &wrong_hash, &covenant_pk);
+        let wit_wrong = CovenantScript::create_covenant_witness(&sig_single, &covenant_pk, &preimage_single);
+        let mut vm_wrong = Vm::with_witness(wit_wrong);
+        vm_wrong.set_tx_sighash(sighash_single);
+        assert_eq!(vm_wrong.execute(b_wrong.as_bytes()).unwrap_err(), VmError::VerifyFailed);
+
+        // 4. SIGHASH_SINGLE out of bounds returns consensus error
+        assert!(TaprootSighashBuilder::build(&tx, 2, &prevouts, TaprootSighashType::Single).is_err());
     }
 
     #[test]

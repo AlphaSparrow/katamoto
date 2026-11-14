@@ -305,33 +305,25 @@ impl Transaction {
 
     /// Computes BIP-341 sighash preimage for a given input
     pub fn build_sighash_preimage(&self, input_index: usize, prevouts: &[TxOut]) -> TaprootSighashPreimage {
-        let sha_prevouts = compute_sha_prevouts(&self.inputs);
-        let amounts: Vec<u64> = prevouts.iter().map(|p| p.value).collect();
-        let sha_amounts = compute_sha_amounts(&amounts);
-        let spks: Vec<Vec<u8>> = prevouts.iter().map(|p| p.script_pubkey.clone()).collect();
-        let sha_scriptpubkeys = compute_sha_scriptpubkeys(&spks);
-        let sha_sequences = compute_sha_sequences(&self.inputs);
-        let sha_outputs = compute_sha_outputs(&self.outputs);
-
-        TaprootSighashPreimage {
-            epoch: 0x00,
-            hash_type: 0x00,
-            version: (self.version as u32).to_le_bytes(),
-            lock_time: self.lock_time.to_le_bytes(),
-            sha_prevouts,
-            sha_amounts,
-            sha_scriptpubkeys,
-            sha_sequences,
-            sha_outputs,
-            spend_type: 0x02, // Script path spend
-            input_index: (input_index as u32).to_le_bytes(),
-        }
+        TaprootSighashBuilder::build(self, input_index, prevouts, TaprootSighashType::Default)
+            .expect("Default sighash build should succeed for valid inputs")
     }
 
     /// Computes BIP-341 Taproot Sighash for spending an input
     pub fn taproot_sighash(&self, input_index: usize, prevouts: &[TxOut]) -> [u8; 32] {
         let preimage = self.build_sighash_preimage(input_index, prevouts);
         preimage.compute_sighash()
+    }
+
+    /// Computes BIP-341 Taproot Sighash with a specific TaprootSighashType
+    pub fn taproot_sighash_with_type(
+        &self,
+        input_index: usize,
+        prevouts: &[TxOut],
+        hash_type: TaprootSighashType,
+    ) -> Result<[u8; 32], ConsensusError> {
+        let preimage = TaprootSighashBuilder::build(self, input_index, prevouts, hash_type)?;
+        Ok(preimage.compute_sighash())
     }
 }
 
@@ -433,6 +425,100 @@ pub fn compute_sha_outputs(outputs: &[TxOut]) -> [u8; 32] {
     out
 }
 
+/// BIP-341 Taproot Sighash Types
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[repr(u8)]
+pub enum TaprootSighashType {
+    Default = 0x00,
+    All = 0x01,
+    None = 0x02,
+    Single = 0x03,
+    AllAnyoneCanPay = 0x81,
+    NoneAnyoneCanPay = 0x82,
+    SingleAnyoneCanPay = 0x83,
+}
+
+impl TaprootSighashType {
+    pub fn to_u8(self) -> u8 {
+        self as u8
+    }
+
+    pub fn is_single(&self) -> bool {
+        (self.to_u8() & 0x03) == 0x03
+    }
+
+    pub fn is_none(&self) -> bool {
+        (self.to_u8() & 0x03) == 0x02
+    }
+
+    pub fn is_anyone_can_pay(&self) -> bool {
+        (self.to_u8() & 0x80) != 0
+    }
+}
+
+/// Builder and helper for constructing BIP-341 Taproot Sighash preimages and digests
+pub struct TaprootSighashBuilder;
+
+impl TaprootSighashBuilder {
+    /// Computes BIP-341 sighash for a transaction with a given sighash type
+    pub fn build(
+        tx: &Transaction,
+        input_index: usize,
+        prevouts: &[TxOut],
+        hash_type: TaprootSighashType,
+    ) -> Result<TaprootSighashPreimage, ConsensusError> {
+        if input_index >= tx.inputs.len() {
+            return Err(ConsensusError::EmptyTx);
+        }
+
+        let sha_prevouts = compute_sha_prevouts(&tx.inputs);
+        let amounts: Vec<u64> = prevouts.iter().map(|p| p.value).collect();
+        let sha_amounts = compute_sha_amounts(&amounts);
+        let spks: Vec<Vec<u8>> = prevouts.iter().map(|p| p.script_pubkey.clone()).collect();
+        let sha_scriptpubkeys = compute_sha_scriptpubkeys(&spks);
+        let sha_sequences = compute_sha_sequences(&tx.inputs);
+
+        let sha_outputs = if hash_type.is_single() {
+            if input_index >= tx.outputs.len() {
+                return Err(ConsensusError::WitnessInputMismatch(input_index, tx.outputs.len()));
+            }
+            let mut out_buf = Vec::new();
+            tx.outputs[input_index].serialize(&mut out_buf);
+            let digest = Sha256::digest(&out_buf);
+            let mut h = [0u8; 32];
+            h.copy_from_slice(&digest);
+            h
+        } else if hash_type.is_none() {
+            [0u8; 32]
+        } else {
+            compute_sha_outputs(&tx.outputs)
+        };
+
+        Ok(TaprootSighashPreimage::new_with_type(
+            hash_type,
+            tx.version as u32,
+            tx.lock_time,
+            sha_prevouts,
+            sha_amounts,
+            sha_scriptpubkeys,
+            sha_sequences,
+            sha_outputs,
+            0x02, // Script path spend
+            input_index as u32,
+        ))
+    }
+
+    /// Computes the single-output SHA256 commitment for SIGHASH_SINGLE covenants
+    pub fn compute_single_output_hash(output: &TxOut) -> [u8; 32] {
+        let mut buf = Vec::new();
+        output.serialize(&mut buf);
+        let digest = Sha256::digest(&buf);
+        let mut h = [0u8; 32];
+        h.copy_from_slice(&digest);
+        h
+    }
+}
+
 /// Taproot BIP-341 / BIP-342 Sighash Preimage components
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TaprootSighashPreimage {
@@ -450,6 +536,33 @@ pub struct TaprootSighashPreimage {
 }
 
 impl TaprootSighashPreimage {
+    pub fn new_with_type(
+        hash_type: TaprootSighashType,
+        version: u32,
+        lock_time: u32,
+        sha_prevouts: [u8; 32],
+        sha_amounts: [u8; 32],
+        sha_scriptpubkeys: [u8; 32],
+        sha_sequences: [u8; 32],
+        sha_outputs: [u8; 32],
+        spend_type: u8,
+        input_index: u32,
+    ) -> Self {
+        Self {
+            epoch: 0x00,
+            hash_type: hash_type.to_u8(),
+            version: version.to_le_bytes(),
+            lock_time: lock_time.to_le_bytes(),
+            sha_prevouts,
+            sha_amounts,
+            sha_scriptpubkeys,
+            sha_sequences,
+            sha_outputs,
+            spend_type,
+            input_index: input_index.to_le_bytes(),
+        }
+    }
+
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut buf = Vec::with_capacity(175);
         buf.push(self.epoch);
@@ -542,6 +655,26 @@ impl CovenantScript {
         builder.push_slice(covenant_pubkey);
         builder.op_equalverify(); // confirms pubkey == covenant_pubkey
         builder.op_checksig();    // verifies sig with covenant_pubkey
+    }
+
+    /// Emits Bitcoin Script that enforces a SIGHASH_ALL covenant:
+    /// Asserts that all outputs of the spending transaction match `expected_sha_outputs`.
+    pub fn emit_taproot_sighash_all_covenant(
+        builder: &mut ScriptBuilder,
+        expected_sha_outputs: &[u8; 32],
+        covenant_pubkey: &[u8; 32],
+    ) {
+        Self::emit_sighash_covenant_verifier(builder, expected_sha_outputs, covenant_pubkey);
+    }
+
+    /// Emits Bitcoin Script that enforces a SIGHASH_SINGLE covenant:
+    /// Asserts that the output matching the input's index commits to `expected_single_output_hash`.
+    pub fn emit_taproot_sighash_single_covenant(
+        builder: &mut ScriptBuilder,
+        expected_single_output_hash: &[u8; 32],
+        covenant_pubkey: &[u8; 32],
+    ) {
+        Self::emit_sighash_covenant_verifier(builder, expected_single_output_hash, covenant_pubkey);
     }
 
     /// Prepares witness for sighash introspection covenant spend
